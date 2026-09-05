@@ -369,6 +369,7 @@ const state = {
   feeSettingsCollapsed: true,
   plMonthlyCollapsed: true,
   plImportedListCollapsed: true,
+  plExpandedYear: null,
   feeSettings: {
     buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%
     sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
@@ -467,6 +468,7 @@ function computeUnrealized(h, currentPrice){
 
 function toggleFeeSettings(){ state.feeSettingsCollapsed = !state.feeSettingsCollapsed; render(); }
 function togglePlMonthlyView(){ state.plMonthlyCollapsed = !state.plMonthlyCollapsed; render(); }
+function togglePlYear(y){ state.plExpandedYear = (state.plExpandedYear === y) ? null : y; render(); }
 function togglePlImportedList(){ state.plImportedListCollapsed = !state.plImportedListCollapsed; render(); }
 function updateFeeSettings(){
   const buy = parseFloat(document.getElementById('fee-buy').value);
@@ -2226,7 +2228,7 @@ function removeImportedPL(id){
 
 /* ================= 已實現損益統計（依交易紀錄＋匯入資料，年度／月份加總，區分交易損益與配息） ================= */
 function renderPLSummaryTab(){
-  const { realizedById } = computeHoldings();
+  const { realizedById, holdings } = computeHoldings();
   const sellTxs = state.transactions.filter(t=>t.type==='sell');
   const byMonth = {};
   const tradeByYear = {};
@@ -2348,27 +2350,52 @@ function renderPLSummaryTab(){
     const trade = (tradeByYear[y]||0) + (importedTradeByYear[y]||0);
     const dividend = (importedDividendByYear[y]||0) + (autoDividendByYear[y]||0);
     const total = trade + dividend;
-    return `<tr>
-      <td>${y}</td>
+    const expanded = state.plExpandedYear === y;
+    const monthsInYear = Object.keys(byMonth).filter(m=>m.startsWith(y+'-')).sort();
+    const monthSubRows = expanded ? monthsInYear.map(m=>{
+      const v = byMonth[m];
+      const monthLabel = parseInt(m.slice(5,7),10) + ' 月';
+      return `<tr>
+        <td style="padding-left:28px; color:var(--text-dim); font-weight:400;">${monthLabel}</td>
+        <td class="${v>=0?'up-color':'down-color'}">${v>=0?'+':''}${fmt(v,0)}</td>
+        <td></td>
+        <td></td>
+      </tr>`;
+    }).join('') : '';
+    const noMonthData = (expanded && !monthsInYear.length)
+      ? `<tr><td colspan="4" style="padding-left:28px; color:var(--text-faint);">這個年度沒有帶確切日期的交易資料可以拆月份（可能都是只填年度、沒填日期的手動匯入）</td></tr>`
+      : '';
+    return `<tr style="cursor:pointer;" onclick="togglePlYear('${y}')">
+      <td><span class="collapsible-arrow" style="margin-right:4px;">${expanded?'▾':'▸'}</span>${y}</td>
       <td class="${trade>=0?'up-color':'down-color'}">${trade>=0?'+':''}${fmt(trade,0)}</td>
       <td class="${dividend>=0?'up-color':'down-color'}">${dividend>=0?'+':''}${fmt(dividend,0)}</td>
       <td class="${total>=0?'up-color':'down-color'}">${total>=0?'+':''}${fmt(total,0)}</td>
-    </tr>`;
+    </tr>${monthSubRows}${noMonthData}`;
   }).join('');
   const grandTrade = years.reduce((s,y)=> s + (tradeByYear[y]||0) + (importedTradeByYear[y]||0), 0);
   const grandDividend = years.reduce((s,y)=> s + (importedDividendByYear[y]||0) + (autoDividendByYear[y]||0), 0);
   const grandTotal = grandTrade + grandDividend;
 
-  const monthRows = months.map(m=>{
-    const v = byMonth[m];
-    return `<tr><td>${m}</td><td class="${v>=0?'up-color':'down-color'}">${v>=0?'+':''}${fmt(v,0)}</td></tr>`;
-  }).join('');
+  const dividendTrackedSymbols = symbols.filter(sym=>{
+    const h = holdings[sym];
+    return h && h.shares>0;
+  });
+  const fetchedCount = dividendTrackedSymbols.filter(sym=> state.dividendCache[sym] && !state.dividendCache[sym].loading).length;
+  const anyLoading = dividendTrackedSymbols.some(sym=> state.dividendCache[sym] && state.dividendCache[sym].loading);
 
   return `
     ${importSection}
     <div class="panel-section">
       <h3>已實現損益統計（依年度，區分交易損益／配息）</h3>
-      <p class="panel-hint">交易損益＝「交易紀錄」頁籤中賣出交易的已實現損益＋上方手動匯入的交易損益；配息＝上方手動匯入的配息＋「配息」頁籤已抓取到的現金股利（尚未抓取過的年度會顯示為 0，可到「配息」頁籤補抓）</p>
+      <p class="panel-hint">交易損益＝「交易紀錄」頁籤中賣出交易的已實現損益＋上方手動匯入的交易損益；配息會依你目前持股，自動比對每次除息日前的實際持有股數判斷資格，不需要手動輸入——但需要先抓取過資料才有數字，見下方按鈕。點年度那一列可以展開看該年度各月份的交易損益。</p>
+      ${dividendTrackedSymbols.length ? `
+      <div class="card" style="margin-bottom:12px;">
+        <div class="result-line">
+          <span class="rl-label">配息資料狀態</span>
+          <span class="rl-val" style="font-family:'Noto Sans TC',sans-serif; font-weight:400;">${dividendTrackedSymbols.length} 檔持股中，${fetchedCount} 檔已抓取過配息資料</span>
+        </div>
+        <button class="btn" style="margin-top:8px;" onclick="fetchAllDividends()" ${anyLoading?'disabled':''}>${anyLoading?'抓取中…':'抓取所有持股的配息資料'}</button>
+      </div>` : ''}
       <div class="card" style="padding:0; overflow-x:auto;">
         <table>
           <thead><tr><th>年度</th><th>交易損益</th><th>配息</th><th>年度合計</th></tr></thead>
@@ -2381,21 +2408,6 @@ function renderPLSummaryTab(){
           </tr></tfoot>
         </table>
       </div>
-      <div class="collapsible-head" style="margin-top:16px;" onclick="togglePlMonthlyView()">
-        <h3 style="margin:0; font-size:13px;">交易損益（依月份）</h3>
-        <span class="collapsible-arrow">${state.plMonthlyCollapsed ? '▸' : '▾'}</span>
-      </div>
-      ${state.plMonthlyCollapsed ? `
-        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="togglePlMonthlyView()">平常看年度數字就夠了，點這裡展開看每個月的明細</p>
-      ` : `
-        <p class="panel-hint" style="margin-top:6px;">「交易紀錄」頁籤中賣出交易的已實現損益，加上上方手動匯入時有填「交易日期」的紀錄（只填年度、沒填日期的匯入資料不會出現在月份裡，只會算進年度總計）</p>
-        <div class="card" style="padding:0; overflow-x:auto; max-height:420px; overflow-y:auto;">
-          <table>
-            <thead><tr><th>月份</th><th>已實現損益</th></tr></thead>
-            <tbody>${monthRows || `<tr><td colspan="2" style="text-align:center; color:var(--text-faint); padding:12px 0;">尚無交易紀錄</td></tr>`}</tbody>
-          </table>
-        </div>
-      `}
     </div>
   `;
 }
