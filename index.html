@@ -373,11 +373,13 @@ const state = {
   plExpandedYear: null,
   portfolioAccountFilter: '全部',       // 持股總覽的帳戶篩選頁籤，'全部' 代表不分帳戶合併顯示
   txExpandedSymbol: null,               // 交易紀錄頁籤裡，目前展開中的股票代號（一次只展開一檔）
+  reconciling: false,                   // 「整理重複股票代號」執行中的狀態
   feeSettings: {
-    buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%
+    buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%（個股與 ETF 手續費率通常相同，不分開設定）
     sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
     minFee: 20,             // 最低手續費（元）
-    taxRate: 0.003,         // 證交稅率，股票預設 0.3%（ETF 可自行改為 0.1%）
+    stockTaxRate: 0.003,    // 個股證交稅率，預設 0.3%
+    etfTaxRate: 0.001,      // ETF 證交稅率，預設 0.1%（系統會自動判斷個股或 ETF，套用對應稅率）
   },
   alerts: [
     { id: 1, symbol: '2330', type: 'target', price: 1050 },
@@ -422,6 +424,20 @@ function escapeAttr(s){
 /* ================= 持股計算（由交易紀錄推導） ================= */
 // 買進成本會自動內含買進手續費；賣出時若該筆交易有手動輸入的已實現損益，優先採用該金額，
 // 否則依目前費率設定（手續費＋證交稅）自動試算。回傳持股表，以及每筆賣出交易實際採用的已實現損益（供交易紀錄頁籤顯示）。
+// 判斷某檔股票是「個股」還是「ETF」，自動套用不同的證交稅率（手續費率兩者通常相同，不分開判斷）。
+// 優先用 FinMind 查過的產業分類（industry_category === 'ETF'）；還沒查過時，退回用台股慣例代號判斷
+// （ETF 代號慣例以 00 開頭，例如 0050、0056、00878；個股則是一般 4 碼代號如 2330、2317）。
+function isETF(symbol){
+  if(finmindStockInfoCache){
+    const hit = finmindStockInfoCache.find(r=>r.stock_id===symbol);
+    if(hit && hit.industry_category) return hit.industry_category === 'ETF';
+  }
+  return /^00/.test(String(symbol||''));
+}
+function getTaxRateForSymbol(symbol){
+  return isETF(symbol) ? state.feeSettings.etfTaxRate : state.feeSettings.stockTaxRate;
+}
+
 function computeHoldings(accountFilter){
   const holdings = {};
   const realizedById = {};
@@ -446,7 +462,7 @@ function computeHoldings(accountFilter){
       } else {
         const sellValue = sellShares*t.price;
         const sellFee = Math.max(sellValue*fee.sellFeeRate, fee.minFee);
-        const sellTax = sellValue*fee.taxRate;
+        const sellTax = sellValue*getTaxRateForSymbol(t.symbol);
         realizedForThis = sellValue - sellFee - sellTax - sellShares*h.avgCost;
       }
       realizedById[t.id] = realizedForThis;
@@ -459,12 +475,12 @@ function computeHoldings(accountFilter){
 }
 
 // 依目前費率設定，試算某筆持股「若現在全部賣出」的稅費後未實現損益
-function computeUnrealized(h, currentPrice){
+function computeUnrealized(h, currentPrice, symbol){
   const fee = state.feeSettings;
   if(!h || h.shares<=0) return { shares:0, grossValue:0, estFee:0, estTax:0, netValue:0, costBasis:0, unrealized:0, unrealizedPct:0 };
   const grossValue = h.shares*currentPrice;
   const estFee = Math.max(grossValue*fee.sellFeeRate, fee.minFee);
-  const estTax = grossValue*fee.taxRate;
+  const estTax = grossValue*getTaxRateForSymbol(symbol);
   const netValue = grossValue - estFee - estTax;
   const costBasis = h.shares*h.avgCost;
   const unrealized = netValue - costBasis;
@@ -481,12 +497,14 @@ function updateFeeSettings(){
   const buy = parseFloat(document.getElementById('fee-buy').value);
   const sell = parseFloat(document.getElementById('fee-sell').value);
   const min = parseFloat(document.getElementById('fee-min').value);
-  const tax = parseFloat(document.getElementById('fee-tax').value);
+  const stockTax = parseFloat(document.getElementById('fee-tax-stock').value);
+  const etfTax = parseFloat(document.getElementById('fee-tax-etf').value);
   state.feeSettings = {
     buyFeeRate: Number.isNaN(buy) ? state.feeSettings.buyFeeRate : buy/100,
     sellFeeRate: Number.isNaN(sell) ? state.feeSettings.sellFeeRate : sell/100,
     minFee: Number.isNaN(min) ? state.feeSettings.minFee : min,
-    taxRate: Number.isNaN(tax) ? state.feeSettings.taxRate : tax/100,
+    stockTaxRate: Number.isNaN(stockTax) ? state.feeSettings.stockTaxRate : stockTax/100,
+    etfTaxRate: Number.isNaN(etfTax) ? state.feeSettings.etfTaxRate : etfTax/100,
   };
   render();
 }
@@ -823,9 +841,9 @@ function handleTxTypeChange(val){
   if(field) field.style.display = val==='sell' ? 'block' : 'none';
 }
 
-function addTransaction(){
+async function addTransaction(){
   const draft = state.txDraft;
-  const symbol = resolveSymbolInput(draft.symbolInput);
+  let symbol = resolveSymbolInput(draft.symbolInput);
   if(!symbol){ alert('請輸入股票代號或名稱'); return; }
   const shares = parseFloat(draft.shares);
   if(!shares || shares<=0){ alert('請輸入股數'); return; }
@@ -839,6 +857,18 @@ function addTransaction(){
   } else {
     price = parseFloat(draft.price);
     if(!price || price<=0){ alert('請輸入成交價，或直接輸入成交總金額'); return; }
+  }
+
+  // 不在內建股票池、看起來又不像代號（例如打的是中文名稱）時，先用 FinMind 反查正確代號，
+  // 避免同一檔股票因為輸入方式不同（一次打代號、一次打名稱）被拆成兩個不同的追蹤鍵值
+  if(!ensureStockTracked(symbol) && !/^[0-9]{2,6}[A-Za-z]{0,2}$/.test(symbol)){
+    try{
+      const resolved = await resolveFinMindSymbolAndPrice(draft.symbolInput, symbol);
+      if(resolved){
+        ensureStockTracked(resolved.finmindId, resolved.name, resolved.result.price, resolved.result.prevClose, resolved.result.series);
+        symbol = resolved.finmindId;
+      }
+    } catch(err){ /* 查不到就先用原始輸入，之後可以用「整理重複股票代號」修正 */ }
   }
 
   const date = draft.date || new Date().toISOString().slice(0,10);
@@ -1141,6 +1171,46 @@ function removeTransaction(id){
 }
 // 持股總覽的「一鍵刪除」：把某檔股票的所有交易紀錄整批刪掉，方便輸錯時重新開始（不影響其他股票）
 function selectPortfolioAccount(a){ state.portfolioAccountFilter = a; render(); }
+// 修正舊資料：找出交易紀錄裡「看起來不像代號」的股票標記（例如中文名稱），用 FinMind 反查正確代號，
+// 找到後把所有用該標記記錄的交易統一改成正確代號，合併回同一檔股票，避免同一檔股票被拆成兩筆
+async function reconcileDuplicateSymbols(){
+  const suspects = Array.from(new Set(state.transactions.map(t=>t.symbol)))
+    .filter(sym => !getStock(sym) && !/^[0-9]{2,6}[A-Za-z]{0,2}$/.test(sym));
+  if(!suspects.length){ alert('沒有發現看起來需要修正的股票標記，目前的股票代號都正常。'); return; }
+  if(!confirm(`發現這些看起來像是誤打成名稱、沒有正確代號的標記：${suspects.join('、')}\n要嘗試用 FinMind 反查正確代號並合併嗎？`)) return;
+  state.reconciling = true;
+  render();
+  let mergedCount = 0;
+  const failed = [];
+  for(const sym of suspects){
+    try{
+      const id = await lookupFinMindStockId(sym);
+      if(id && id !== sym){
+        state.transactions.forEach(t=>{ if(t.symbol===sym) t.symbol = id; });
+        state.alerts.forEach(a=>{ if(a.symbol===sym) a.symbol = id; });
+        if(!getStock(id)){
+          const priceResult = await fetchFinMindPrice(id).catch(()=>null);
+          if(priceResult) ensureStockTracked(id, sym, priceResult.price, priceResult.prevClose, priceResult.series);
+        }
+        state.watchGroups.forEach(g=>{
+          const idx = g.symbols.indexOf(sym);
+          if(idx!==-1){ g.symbols.splice(idx,1); if(!g.symbols.includes(id)) g.symbols.push(id); }
+        });
+        mergedCount++;
+      } else {
+        failed.push(sym);
+      }
+    } catch(err){ failed.push(sym); }
+  }
+  state.reconciling = false;
+  render();
+  alert(
+    (mergedCount ? `已合併 ${mergedCount} 檔股票的代號。\n` : '') +
+    (failed.length ? `這些標記查不到對應代號，可能本來就是有效的自訂代號，未變動：${failed.join('、')}` : '')
+    || '完成，沒有需要調整的項目。'
+  );
+}
+
 function clearHoldingForSymbol(symbol){
   const s = getStock(symbol);
   const accountFilter = state.portfolioAccountFilter;
@@ -1157,9 +1227,9 @@ function clearHoldingForSymbol(symbol){
 // 以一筆「買進」交易記錄匯入，並標記 skipFee（因為填入的總成本已經是實際花費，不再另外計算買進手續費）
 // 與 imported（純粹用於畫面上標示「期初匯入」，不影響任何計算邏輯）
 function updateImportDraft(field, value){ state.importDraft[field] = value; }
-function addImportedHolding(){
+async function addImportedHolding(){
   const d = state.importDraft;
-  const symbol = resolveSymbolInput(d.symbolInput);
+  let symbol = resolveSymbolInput(d.symbolInput);
   if(!symbol){ alert('請輸入股票代號或名稱'); return; }
   const shares = parseFloat(d.shares);
   if(!shares || shares<=0){ alert('請輸入股數'); return; }
@@ -1169,7 +1239,16 @@ function addImportedHolding(){
   const date = d.date || new Date().toISOString().slice(0,10);
   const account = (d.account||'').trim();
 
-  ensureStockTracked(symbol);
+  if(!ensureStockTracked(symbol) && !/^[0-9]{2,6}[A-Za-z]{0,2}$/.test(symbol)){
+    try{
+      const resolved = await resolveFinMindSymbolAndPrice(d.symbolInput, symbol);
+      if(resolved){
+        ensureStockTracked(resolved.finmindId, resolved.name, resolved.result.price, resolved.result.prevClose, resolved.result.series);
+        symbol = resolved.finmindId;
+      }
+    } catch(err){ /* 查不到就先用原始輸入，之後可以用「整理重複股票代號」修正 */ }
+  }
+
   state.transactions.push({
     id: state.nextTransactionId++, symbol, type:'buy', shares, price:avgCost, date,
     realized:null, skipFee:true, imported:true, account,
@@ -1516,7 +1595,7 @@ function resetStateForNewUser(){
   state.txDraft = { date: new Date().toISOString().slice(0,10), symbolInput:'', type:'buy', shares:'', price:'', amount:'', amountEdited:false, realized:'' };
   state.avgSimDraft = { shares:'', price:'' };
   state.reverseDraft = { targetAvg:'', buyPrice:'' };
-  state.feeSettings = { buyFeeRate:0.001425, sellFeeRate:0.001425, minFee:20, taxRate:0.003 };
+  state.feeSettings = { buyFeeRate:0.001425, sellFeeRate:0.001425, minFee:20, stockTaxRate:0.003, etfTaxRate:0.001 };
   state.alerts = [];
   state.nextAlertId = 1;
   state.notifiedAlerts = new Set();
@@ -1757,7 +1836,7 @@ function renderMain(sel){
 function renderAvgTab(sel){
   const h = computeHoldings().holdings[sel.symbol] || { shares:0, avgCost:0, realizedPL:0 };
   const hasHolding = h.shares > 0;
-  const u = computeUnrealized(h, sel.price);
+  const u = computeUnrealized(h, sel.price, sel.symbol);
   const days = holdingDays(sel.symbol);
 
   return `
@@ -2037,15 +2116,16 @@ function renderTransactionsTab(sel){
         <span class="collapsible-arrow">${state.feeSettingsCollapsed ? '▸' : '▾'}</span>
       </div>
       ${state.feeSettingsCollapsed ? `
-        <p class="panel-hint" style="cursor:pointer;" onclick="toggleFeeSettings()">目前：買進 ${(fee.buyFeeRate*100).toFixed(4)}%／賣出 ${(fee.sellFeeRate*100).toFixed(4)}%／最低 ${fmt(fee.minFee,0)} 元／證交稅 ${(fee.taxRate*100).toFixed(4)}%（點這裡展開調整）</p>
+        <p class="panel-hint" style="cursor:pointer;" onclick="toggleFeeSettings()">目前：買進 ${(fee.buyFeeRate*100).toFixed(4)}%／賣出 ${(fee.sellFeeRate*100).toFixed(4)}%／最低 ${fmt(fee.minFee,0)} 元／證交稅 個股 ${(fee.stockTaxRate*100).toFixed(4)}%・ETF ${(fee.etfTaxRate*100).toFixed(4)}%（點這裡展開調整）</p>
       ` : `
-        <p class="panel-hint">用來自動試算未實現損益，以及賣出交易未手動輸入金額時的預設試算值。可依實際券商費率調整（證交稅：股票 0.3%、ETF 0.1%）</p>
+        <p class="panel-hint">用來自動試算未實現損益，以及賣出交易未手動輸入金額時的預設試算值。可依實際券商費率調整；證交稅系統會自動判斷個股或 ETF 套用對應稅率，不用手動切換</p>
         <div class="card">
           <div class="grid-2">
             <div class="field"><label>買進手續費率 (%)</label><input type="number" id="fee-buy" value="${(fee.buyFeeRate*100).toFixed(4)}" step="0.0001" min="0" onchange="updateFeeSettings()"/></div>
             <div class="field"><label>賣出手續費率 (%)</label><input type="number" id="fee-sell" value="${(fee.sellFeeRate*100).toFixed(4)}" step="0.0001" min="0" onchange="updateFeeSettings()"/></div>
             <div class="field"><label>最低手續費（元）</label><input type="number" id="fee-min" value="${fee.minFee}" step="1" min="0" onchange="updateFeeSettings()"/></div>
-            <div class="field"><label>證交稅率 (%)</label><input type="number" id="fee-tax" value="${(fee.taxRate*100).toFixed(4)}" step="0.0001" min="0" onchange="updateFeeSettings()"/></div>
+            <div class="field"><label>個股證交稅率 (%)</label><input type="number" id="fee-tax-stock" value="${(fee.stockTaxRate*100).toFixed(4)}" step="0.0001" min="0" onchange="updateFeeSettings()"/></div>
+            <div class="field"><label>ETF 證交稅率 (%)</label><input type="number" id="fee-tax-etf" value="${(fee.etfTaxRate*100).toFixed(4)}" step="0.0001" min="0" onchange="updateFeeSettings()"/></div>
           </div>
         </div>
       `}
@@ -2204,7 +2284,7 @@ function renderPortfolioTab(){
   const showAccountTabs = accounts.length > 1 || (accounts.length===1 && accounts[0] !== '未分類');
   const selectedAccount = state.portfolioAccountFilter;
   const { holdings: holdingsMap } = computeHoldings(selectedAccount);
-  const openSymbols = Object.keys(holdingsMap).filter(sym=>holdingsMap[sym].shares>0);
+  const openSymbols = Object.keys(holdingsMap).filter(sym=>holdingsMap[sym].shares>0).sort((a,b)=>a.localeCompare(b, undefined, { numeric:true }));
   const allRealized = Object.values(holdingsMap).reduce((sum,h)=>sum+h.realizedPL, 0);
 
   const accountTabsHtml = showAccountTabs ? `
@@ -2225,7 +2305,7 @@ function renderPortfolioTab(){
     const s = getStock(sym);
     const price = s ? s.price : h.avgCost;
     const name = s ? s.name : sym;
-    const u = computeUnrealized(h, price);
+    const u = computeUnrealized(h, price, sym);
     const days = holdingDays(sym);
     totalCost += u.costBasis; totalNetValue += u.netValue; totalGrossValue += u.grossValue;
     return `<tr>
@@ -2246,7 +2326,10 @@ function renderPortfolioTab(){
   return `
     ${renderImportHoldingsSection()}
     <div class="panel-section">
-      <h3>持股總覽</h3>
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">持股總覽</h3>
+        <button class="btn-ghost" onclick="reconcileDuplicateSymbols()" ${state.reconciling?'disabled':''} title="如果同一檔股票因為輸入方式不同（一次打代號、一次打名稱）被拆成兩筆，用這個自動合併">${state.reconciling?'整理中…':'整理重複股票代號'}</button>
+      </div>
       ${accountTabsHtml}
       <p class="panel-hint">持股成本＝股數×平均成本（已內含買進手續費，若為「期初匯入」則為你輸入的總成本）；未實現損益已另外扣除試算的賣出手續費與證交稅（費率可於「交易紀錄」頁籤調整）；持有天數以該股最早一筆交易紀錄起算。${showAccountTabs?'目前顯示「'+escapeAttr(selectedAccount)+'」的持股；':''}輸入錯誤時，最右邊 ✕ 可以刪除該檔股票（在目前篩選帳戶下）的所有交易紀錄重新輸入；如果只想刪除某一筆交易，請到「交易紀錄」頁籤操作</p>
       <div class="card" style="padding:0; overflow-x:auto;">
