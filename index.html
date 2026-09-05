@@ -367,6 +367,7 @@ const state = {
   plImportDraft: { year: '', category: 'trade', amount: '', note: '' },
   reverseDraft: { targetAvg: '', buyPrice: '' },
   feeSettingsCollapsed: true,
+  plMonthlyCollapsed: true,
   feeSettings: {
     buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%
     sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
@@ -382,13 +383,21 @@ const state = {
   dividendYear: new Date().getFullYear(),
   dividendCache: {}, // symbol -> { loading, error, records, fetchedAt }
   finmindToken: '',
-  importedPL: [], // 手動匯入的過去損益：{ id, year, category:'trade'|'dividend', amount, note }
+  importedPL: [], // 手動匯入的過去損益：{ id, year, category:'trade'|'dividend', amount, note, date?, symbol?, importSource? }
   nextImportedPLId: 1,
   sheetImport: {
     url: '',
     loading: false,
+    importing: false, // 確認匯入時（可能會呼叫 FinMind 查價/名稱）的處理中狀態
     error: null,
     rows: [],       // 解析後的每一列：{ rowIndex, symbolRaw, symbol, shares, totalCost, avgCost, date, errorMsg, include }
+    fetchedAt: null,
+  },
+  plSheetImport: {
+    url: '',
+    loading: false,
+    error: null,
+    rows: [],       // 解析後的每一列：{ rowIndex, symbolRaw, symbol, amount, date, errorMsg, include }
     fetchedAt: null,
   },
   session: { username: null, loggedIn: false },
@@ -456,6 +465,7 @@ function computeUnrealized(h, currentPrice){
 }
 
 function toggleFeeSettings(){ state.feeSettingsCollapsed = !state.feeSettingsCollapsed; render(); }
+function togglePlMonthlyView(){ state.plMonthlyCollapsed = !state.plMonthlyCollapsed; render(); }
 function updateFeeSettings(){
   const buy = parseFloat(document.getElementById('fee-buy').value);
   const sell = parseFloat(document.getElementById('fee-sell').value);
@@ -703,7 +713,7 @@ async function addStockBySymbol(){
     const resolved = await resolveFinMindSymbolAndPrice(raw, symbol);
     state.addStockFetching = false;
     if(resolved){
-      ensureStockTracked(resolved.finmindId, raw, resolved.result.price, resolved.result.prevClose, resolved.result.series);
+      ensureStockTracked(resolved.finmindId, resolved.name, resolved.result.price, resolved.result.prevClose, resolved.result.series);
       finishAddStock(resolved.finmindId);
       return;
     }
@@ -845,7 +855,8 @@ const SHEET_HEADER_ALIASES = {
   symbol: ['代號','股票代號','代碼','股票代碼','股票','symbol','stock','code'],
   shares: ['股數','持有股數','數量','symbol shares','shares','qty','quantity'],
   totalCost: ['總成本','持股總成本','總金額','成本總額','總持股成本','total cost','totalcost','cost'],
-  date: ['日期','起始日期','持有日期','買進日期','date'],
+  date: ['日期','起始日期','持有日期','買進日期','交易日期','date'],
+  plAmount: ['損益金額','損益','已實現損益','金額','amount','pl','profit','realized'],
 };
 // 簡易 CSV 解析器（自己寫的，不依賴外部函式庫，避免外部 CDN 載入失敗導致整個功能壞掉）
 // 支援標準逗號分隔、雙引號欄位（含欄位內逗號、換行、跳脫雙引號 ""），第一列當標題
@@ -929,6 +940,28 @@ function mapSheetRows(objRows){
     return { rowIndex:i+2, symbolRaw, symbol, shares, totalCost, avgCost, date, errorMsg, include: !errorMsg };
   }).filter(Boolean);
 }
+// 「已實現損益」試算表匯入用：股票代號、損益金額、交易日期
+function mapPlSheetRows(objRows){
+  if(!objRows.length) return [];
+  const headers = Object.keys(objRows[0]);
+  const symbolKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.symbol);
+  const amountKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.plAmount);
+  const dateKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.date);
+  return objRows.map((row,i)=>{
+    const symbolRaw = symbolKey ? String(row[symbolKey]||'').trim() : '';
+    const amountRaw = amountKey ? String(row[amountKey]||'').replace(/,/g,'').trim() : '';
+    const dateRaw = dateKey ? String(row[dateKey]||'').trim() : '';
+    if(!symbolRaw && !amountRaw && !dateRaw) return null; // 整列空白就跳過
+    const amount = parseFloat(amountRaw);
+    const symbol = symbolRaw ? resolveSymbolInput(symbolRaw) : null;
+    const date = normalizeSheetDate(dateRaw);
+    let errorMsg = null;
+    if(!symbolRaw) errorMsg = '缺少股票代號';
+    else if(amountRaw==='' || Number.isNaN(amount)) errorMsg = '損益金額不是有效數字';
+    else if(!date) errorMsg = '交易日期格式看不懂';
+    return { rowIndex:i+2, symbolRaw, symbol, amount, date, errorMsg, include: !errorMsg };
+  }).filter(Boolean);
+}
 function updateSheetImportUrl(value){ state.sheetImport.url = value; }
 async function fetchSheetImport(){
   const rawUrl = document.getElementById('sheet-import-url').value;
@@ -965,20 +998,91 @@ function toggleSheetImportRow(idx){
   row.include = !row.include;
   render();
 }
+
+/* ================= 已實現損益試算表匯入（股票代號、損益金額、交易日期） ================= */
+function updatePlSheetImportUrl(value){ state.plSheetImport.url = value; }
+async function fetchPlSheetImport(){
+  const rawUrl = document.getElementById('pl-sheet-import-url').value;
+  state.plSheetImport.url = rawUrl;
+  const csvUrl = buildSheetCsvUrl(rawUrl);
+  if(!csvUrl){
+    state.plSheetImport.error = '看不出這是 Google 試算表的連結，請確認貼的是試算表網址';
+    render();
+    return;
+  }
+  state.plSheetImport.loading = true;
+  state.plSheetImport.error = null;
+  render();
+  try{
+    const resp = await fetch(csvUrl);
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const text = await resp.text();
+    const parsedRows = parseCSV(text.trim());
+    state.plSheetImport.rows = mapPlSheetRows(parsedRows);
+    state.plSheetImport.fetchedAt = new Date().toISOString();
+    if(!state.plSheetImport.rows.length){
+      state.plSheetImport.error = '有連上試算表，但沒有解析到任何資料列，請確認第一列是欄位標題（例如：股票代號、損益金額、交易日期）';
+    }
+  } catch(err){
+    state.plSheetImport.error = (err && err.message) || '讀取失敗，請確認試算表已開啟「知道連結的任何人可檢視」，且瀏覽器能連上 Google';
+    state.plSheetImport.rows = [];
+  }
+  state.plSheetImport.loading = false;
+  render();
+}
+function togglePlSheetImportRow(idx){
+  const row = state.plSheetImport.rows[idx];
+  if(!row || row.errorMsg) return;
+  row.include = !row.include;
+  render();
+}
+// 每次確認匯入都會先清掉上次透過這個功能匯入的紀錄，再整批放入最新資料，避免重複疊加；
+// 手動用表單新增的紀錄不受影響。
+function confirmPlSheetImport(){
+  const rows = state.plSheetImport.rows.filter(r=> r.include && !r.errorMsg && r.symbol && r.date);
+  if(!rows.length){ alert('沒有勾選任何可匯入的資料列'); return; }
+  state.importedPL = state.importedPL.filter(p=> p.importSource!=='sheet');
+  rows.forEach(r=>{
+    state.importedPL.push({
+      id: state.nextImportedPLId++, year: parseInt(r.date.slice(0,4),10), category:'trade',
+      amount: r.amount, note: '', date: r.date, symbol: r.symbol, importSource:'sheet',
+    });
+  });
+  state.plSheetImport.rows = [];
+  render();
+}
+
 // 匯入時，同一檔股票先前透過「匯入既有持股」建立的紀錄會被取代（用試算表最新的股數/成本），
 // 避免每次重新整理都疊加成雙倍股數；未出現在試算表中的股票、以及一般手動新增的買賣交易則不受影響。
-function confirmSheetImport(){
+// 不在內建模擬股票池裡的股票，會用 FinMind 查真實股價與正確的股票名稱，確保未實現損益算得出來、名稱也對得上。
+async function confirmSheetImport(){
   const rows = state.sheetImport.rows.filter(r=> r.include && !r.errorMsg && r.symbol);
   if(!rows.length){ alert('沒有勾選任何可匯入的資料列'); return; }
-  rows.forEach(r=>{
+  state.sheetImport.importing = true;
+  render();
+  for(const r of rows){
+    if(!ensureStockTracked(r.symbol)){
+      // 不在內建股票池，去 FinMind 查真實股價與名稱；查不到就退回用試算表裡的代號和你填的均價當底
+      try{
+        const resolved = await resolveFinMindSymbolAndPrice(r.symbolRaw, r.symbol);
+        if(resolved){
+          ensureStockTracked(resolved.finmindId, resolved.name, resolved.result.price, resolved.result.prevClose, resolved.result.series);
+          r.symbol = resolved.finmindId; // 確保交易紀錄用的是查到的正確代號
+        } else {
+          ensureStockTracked(r.symbol, r.symbolRaw, r.avgCost);
+        }
+      } catch(err){
+        ensureStockTracked(r.symbol, r.symbolRaw, r.avgCost);
+      }
+    }
     state.transactions = state.transactions.filter(t=> !(t.imported && t.symbol===r.symbol));
-    ensureStockTracked(r.symbol);
     state.transactions.push({
       id: state.nextTransactionId++, symbol: r.symbol, type:'buy',
       shares: r.shares, price: r.avgCost, date: r.date || new Date().toISOString().slice(0,10),
       realized:null, skipFee:true, imported:true, importSource:'sheet',
     });
-  });
+  }
+  state.sheetImport.importing = false;
   state.sheetImport.rows = [];
   render();
 }
@@ -1018,6 +1122,15 @@ async function pushHoldingsToSheet(){
 
 function removeTransaction(id){
   state.transactions = state.transactions.filter(t=>t.id!==id);
+  render();
+}
+// 持股總覽的「一鍵刪除」：把某檔股票的所有交易紀錄整批刪掉，方便輸錯時重新開始（不影響其他股票）
+function clearHoldingForSymbol(symbol){
+  const s = getStock(symbol);
+  const count = state.transactions.filter(t=>t.symbol===symbol).length;
+  if(!count) return;
+  if(!confirm(`確定要刪除「${s?s.name:symbol}（${symbol}）」的全部 ${count} 筆交易紀錄嗎？這會清空這檔股票的持股，且無法復原（其他股票不受影響）。`)) return;
+  state.transactions = state.transactions.filter(t=>t.symbol!==symbol);
   render();
 }
 
@@ -1199,6 +1312,7 @@ function persistState(){
       importedPL: state.importedPL,
       nextImportedPLId: state.nextImportedPLId,
       sheetImportUrl: state.sheetImport.url,
+      plSheetImportUrl: state.plSheetImport.url,
     };
     const encrypted = encryptForStorage(JSON.stringify(data), sessionPassword);
     localStorage.setItem(userStorageKey(state.session.username), encrypted);
@@ -1353,6 +1467,7 @@ function applyPersistedData(data){
   if(Array.isArray(data.importedPL)) state.importedPL = data.importedPL;
   if(typeof data.nextImportedPLId === 'number') state.nextImportedPLId = data.nextImportedPLId;
   if(typeof data.sheetImportUrl === 'string') state.sheetImport.url = data.sheetImportUrl;
+  if(typeof data.plSheetImportUrl === 'string') state.plSheetImport.url = data.plSheetImportUrl;
   if(!getStock(state.selected)) state.selected = state.stocks[0]?.symbol;
 }
 function resetStateForNewUser(){
@@ -1388,7 +1503,8 @@ function resetStateForNewUser(){
   state.finmindToken = '';
   state.importedPL = [];
   state.nextImportedPLId = 1;
-  state.sheetImport = { url:'', loading:false, error:null, rows:[], fetchedAt:null };
+  state.sheetImport = { url:'', loading:false, importing:false, error:null, rows:[], fetchedAt:null };
+  state.plSheetImport = { url:'', loading:false, error:null, rows:[], fetchedAt:null };
   lastSaveStatus = null;
 }
 window.addEventListener('beforeunload', () => { persistState(); flushSyncOnUnload(); }); // 離開頁面前：本機立即存一次、雲端也用 sendBeacon 補推最後一次（不受一小時節流限制）
@@ -1929,7 +2045,54 @@ function renderSheetImportSection(){
             <tbody>${rowsHtml}</tbody>
           </table>
         </div>
-        <button class="btn" style="margin-top:10px;" onclick="confirmSheetImport()" ${includedCount?'':'disabled'}>確認匯入已勾選的 ${includedCount} 筆</button>
+        <button class="btn" style="margin-top:10px;" onclick="confirmSheetImport()" ${(includedCount && !si.importing)?'':'disabled'}>${si.importing ? '匯入中，查詢股價與名稱…' : `確認匯入已勾選的 ${includedCount} 筆`}</button>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderPlSheetImportSection(){
+  const si = state.plSheetImport;
+  const rows = si.rows;
+  const validCount = rows.filter(r=>!r.errorMsg).length;
+  const includedCount = rows.filter(r=>r.include && !r.errorMsg).length;
+
+  const rowsHtml = rows.map((r,idx)=>{
+    const s = r.symbol ? getStock(r.symbol) : null;
+    return `<tr style="${r.errorMsg?'opacity:0.55;':''}">
+      <td>${r.rowIndex}</td>
+      <td>${r.errorMsg?'':`<input type="checkbox" ${r.include?'checked':''} onchange="togglePlSheetImportRow(${idx})"/>`}</td>
+      <td>${escapeAttr(r.symbolRaw)}${s?` <span class="mono" style="color:var(--text-faint)">(${s.name})</span>`:''}</td>
+      <td>${r.errorMsg||Number.isNaN(r.amount)?'－':`<span class="${r.amount>=0?'up-color':'down-color'}">${r.amount>=0?'+':''}${fmt(r.amount,0)}</span>`}</td>
+      <td>${r.date||'－'}</td>
+      <td>${r.errorMsg?`<span class="down-color">${r.errorMsg}</span>`:'<span class="up-color">可匯入</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div class="card">
+      <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 4px;">方法一：從 Google 試算表自動匯入</h3>
+      <p class="panel-hint" style="margin:0 0 12px;">
+        試算表需先設定「共用」→「知道連結的任何人」可檢視；第一列請放欄位標題，系統會自動比對這些欄位（不限順序、可中英文）：<b>股票代號</b>、<b>損益金額</b>（虧損請填負數）、<b>交易日期</b>。這裡匯入的都會記為「交易損益」類別。
+        每次按「重新整理」都會用試算表最新內容，取代先前透過此功能匯入的全部紀錄，所以放心重複抓取；但不會動到你手動用下方表單新增的紀錄。
+      </p>
+      <div class="field-grid" style="grid-template-columns: 1fr;">
+        <div>
+          <label>Google 試算表連結</label>
+          <input type="text" id="pl-sheet-import-url" placeholder="https://docs.google.com/spreadsheets/d/..." value="${escapeAttr(si.url)}" oninput="updatePlSheetImportUrl(this.value)"/>
+        </div>
+      </div>
+      <button class="btn" style="margin-top:10px;" onclick="fetchPlSheetImport()" ${si.loading?'disabled':''}>${si.loading?'讀取中…':'重新整理'}</button>
+      ${si.error ? `<div class="warn-box" style="margin-top:10px;">${escapeAttr(si.error)}</div>` : ''}
+      ${si.fetchedAt && !si.error ? `<div class="panel-hint" style="margin:8px 0 0;">最後讀取時間：${new Date(si.fetchedAt).toLocaleString('zh-TW')}，共解析到 ${rows.length} 列，其中 ${validCount} 列格式正確</div>` : ''}
+      ${rows.length ? `
+        <div class="card" style="padding:0; overflow-x:auto; margin-top:12px;">
+          <table>
+            <thead><tr><th>列</th><th>匯入</th><th>股票</th><th>損益金額</th><th>交易日期</th><th>狀態</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+        <button class="btn" style="margin-top:10px;" onclick="confirmPlSheetImport()" ${includedCount?'':'disabled'}>確認匯入已勾選的 ${includedCount} 筆</button>
       ` : ''}
     </div>
   `;
@@ -2008,6 +2171,7 @@ function renderPortfolioTab(){
       <td>${fmt(u.grossValue,0)}</td>
       <td class="${u.unrealized>=0?'up-color':'down-color'}">${u.unrealized>=0?'+':''}${fmt(u.unrealized,0)}（${u.unrealizedPct>=0?'+':''}${fmt(u.unrealizedPct)}%）</td>
       <td>${days===null?'－':fmt(days,0)+' 天'}</td>
+      <td><button class="alert-del" onclick="clearHoldingForSymbol('${sym}')" title="刪除這檔股票所有交易紀錄，重新開始輸入">✕</button></td>
     </tr>`;
   }).join('');
   const totalPl = totalNetValue-totalCost;
@@ -2017,10 +2181,10 @@ function renderPortfolioTab(){
     ${renderImportHoldingsSection()}
     <div class="panel-section">
       <h3>持股總覽</h3>
-      <p class="panel-hint">持股成本＝股數×平均成本（已內含買進手續費，若為「期初匯入」則為你輸入的總成本）；未實現損益已另外扣除試算的賣出手續費與證交稅（費率可於「交易紀錄」頁籤調整）；持有天數以該股最早一筆交易紀錄起算</p>
+      <p class="panel-hint">持股成本＝股數×平均成本（已內含買進手續費，若為「期初匯入」則為你輸入的總成本）；未實現損益已另外扣除試算的賣出手續費與證交稅（費率可於「交易紀錄」頁籤調整）；持有天數以該股最早一筆交易紀錄起算。輸入錯誤時，最右邊 ✕ 可以刪除該檔股票的所有交易紀錄重新輸入；如果只想刪除某一筆交易，請到「交易紀錄」頁籤操作</p>
       <div class="card" style="padding:0; overflow-x:auto;">
         <table>
-          <thead><tr><th>股票</th><th>股數</th><th>均價</th><th>持股成本</th><th>現價</th><th>市值</th><th>未實現損益</th><th>持有天數</th></tr></thead>
+          <thead><tr><th>股票</th><th>股數</th><th>均價</th><th>持股成本</th><th>現價</th><th>市值</th><th>未實現損益</th><th>持有天數</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
           <tfoot><tr>
             <td>合計</td><td></td><td></td>
@@ -2028,6 +2192,7 @@ function renderPortfolioTab(){
             <td></td>
             <td>${fmt(totalGrossValue,0)}</td>
             <td class="${totalPl>=0?'up-color':'down-color'}">${totalPl>=0?'+':''}${fmt(totalPl,0)}（${totalPlPct>=0?'+':''}${fmt(totalPlPct)}%）</td>
+            <td></td>
             <td></td>
           </tr></tfoot>
         </table>
@@ -2072,13 +2237,16 @@ function renderPLSummaryTab(){
     tradeByYear[y] = (tradeByYear[y]||0) + r;
   });
 
-  // 手動匯入的過去損益，依年度與類別（交易損益／配息）加總
+  // 手動匯入的過去損益，依年度與類別（交易損益／配息）加總；有填確切日期的（例如試算表匯入）也一併併入月份統計
   const importedTradeByYear = {};
   const importedDividendByYear = {};
   state.importedPL.forEach(p=>{
     const y = String(p.year);
     if(p.category==='dividend'){ importedDividendByYear[y] = (importedDividendByYear[y]||0) + p.amount; }
-    else{ importedTradeByYear[y] = (importedTradeByYear[y]||0) + p.amount; }
+    else{
+      importedTradeByYear[y] = (importedTradeByYear[y]||0) + p.amount;
+      if(p.date){ const ym = p.date.slice(0,7); byMonth[ym] = (byMonth[ym]||0) + p.amount; }
+    }
   });
 
   // 「配息」頁籤已抓取到的現金股利資料，依年度加總（尚未抓取過的年度不會出現在這裡）
@@ -2109,21 +2277,29 @@ function renderPLSummaryTab(){
   const months = Object.keys(byMonth).sort().reverse();
   const yearNow = new Date().getFullYear();
 
-  const importedRows = [...state.importedPL].sort((a,b)=> b.year-a.year || b.id-a.id).map(p=>`
+  const importedRows = [...state.importedPL].sort((a,b)=> (b.date||String(b.year)).localeCompare(a.date||String(a.year)) || b.id-a.id).map(p=>{
+    const s = p.symbol ? getStock(p.symbol) : null;
+    return `
     <tr>
-      <td>${p.year}</td>
+      <td>${p.date || p.year}</td>
+      <td>${p.symbol ? `${s?s.name:p.symbol} <span class="mono" style="color:var(--text-faint)">${p.symbol}</span>` : '－'}</td>
       <td><span class="tag ${p.category==='dividend'?'neutral':'bull'}">${p.category==='dividend'?'配息':'交易損益'}</span></td>
       <td class="${p.amount>=0?'up-color':'down-color'}">${p.amount>=0?'+':''}${fmt(p.amount,0)}</td>
       <td style="color:var(--text-faint)">${p.note?escapeAttr(p.note):'－'}</td>
       <td><button class="alert-del" onclick="removeImportedPL(${p.id})">✕</button></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   const pd = state.plImportDraft;
   const importSection = `
     <div class="panel-section">
       <h3>匯入過去損益紀錄</h3>
-      <p class="panel-hint">開始使用本工具前的歷史損益，可依年度手動補登在這裡，並註明是「交易損益」還是「配息」的錢；補登的資料會併入下方的年度統計一起計算</p>
-      <div class="card">
+      <p class="panel-hint">開始使用本工具前的歷史損益，可依年度手動補登、或從 Google 試算表批次匯入，並區分是「交易損益」還是「配息」的錢；補登的資料會併入下方的年度（及有填日期的話，月份）統計一起計算</p>
+
+      ${renderPlSheetImportSection()}
+
+      <div class="card" style="margin-top:12px;">
+        <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 8px;">方法二：手動逐筆輸入</h3>
         <div class="field-grid">
           <div>
             <label>年度</label>
@@ -2150,7 +2326,7 @@ function renderPLSummaryTab(){
       ${state.importedPL.length ? `
       <div class="card" style="padding:0; overflow-x:auto; margin-top:12px;">
         <table>
-          <thead><tr><th>年度</th><th>類別</th><th>金額</th><th>備註</th><th></th></tr></thead>
+          <thead><tr><th>日期／年度</th><th>股票</th><th>類別</th><th>金額</th><th>備註</th><th></th></tr></thead>
           <tbody>${importedRows}</tbody>
         </table>
       </div>` : ''}
@@ -2200,14 +2376,21 @@ function renderPLSummaryTab(){
       </div>
     </div>
     <div class="panel-section">
-      <h3>交易損益（依月份）</h3>
-      <p class="panel-hint">僅計算「交易紀錄」頁籤中賣出交易的已實現損益，不含上方手動匯入的資料（匯入資料只有年度、沒有月份）</p>
-      <div class="card" style="padding:0; overflow-x:auto; max-height:420px; overflow-y:auto;">
-        <table>
-          <thead><tr><th>月份</th><th>已實現損益</th></tr></thead>
-          <tbody>${monthRows || `<tr><td colspan="2" style="text-align:center; color:var(--text-faint); padding:12px 0;">尚無交易紀錄</td></tr>`}</tbody>
-        </table>
+      <div class="collapsible-head" onclick="togglePlMonthlyView()">
+        <h3 style="margin:0;">交易損益（依月份）</h3>
+        <span class="collapsible-arrow">${state.plMonthlyCollapsed ? '▸' : '▾'}</span>
       </div>
+      ${state.plMonthlyCollapsed ? `
+        <p class="panel-hint" style="cursor:pointer;" onclick="togglePlMonthlyView()">平常看年度數字就夠了，點這裡展開看每個月的明細</p>
+      ` : `
+        <p class="panel-hint">「交易紀錄」頁籤中賣出交易的已實現損益，加上上方手動匯入時有填「交易日期」的紀錄（只填年度、沒填日期的匯入資料不會出現在月份裡，只會算進年度總計）</p>
+        <div class="card" style="padding:0; overflow-x:auto; max-height:420px; overflow-y:auto;">
+          <table>
+            <thead><tr><th>月份</th><th>已實現損益</th></tr></thead>
+            <tbody>${monthRows || `<tr><td colspan="2" style="text-align:center; color:var(--text-faint); padding:12px 0;">尚無交易紀錄</td></tr>`}</tbody>
+          </table>
+        </div>
+      `}
     </div>
   `;
 }
@@ -2325,30 +2508,47 @@ async function fetchFinMindPrice(symbol){
 // 用公司名稱查對應的股票代號（FinMind 的股價 API 只認代號，不認中文名稱）。
 // 整份台股清單抓一次後快取起來，避免每次新增觀察股都重新下載。
 let finmindStockInfoCache = null;
+async function ensureFinMindStockInfoCache(){
+  if(finmindStockInfoCache) return finmindStockInfoCache;
+  const headers = {};
+  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo', { headers });
+  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  const json = await resp.json();
+  finmindStockInfoCache = json.data || [];
+  return finmindStockInfoCache;
+}
 async function lookupFinMindStockId(name){
-  if(!finmindStockInfoCache){
-    const headers = {};
-    if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
-    const resp = await fetch('https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo', { headers });
-    if(!resp.ok) throw new Error('HTTP ' + resp.status);
-    const json = await resp.json();
-    finmindStockInfoCache = json.data || [];
-  }
-  let hit = finmindStockInfoCache.find(r=> r.stock_name === name);
-  if(!hit) hit = finmindStockInfoCache.find(r=> r.stock_name && r.stock_name.includes(name));
+  const cache = await ensureFinMindStockInfoCache();
+  let hit = cache.find(r=> r.stock_name === name);
+  if(!hit) hit = cache.find(r=> r.stock_name && r.stock_name.includes(name));
   return hit ? hit.stock_id : null;
 }
-// 嘗試把使用者輸入解析成 FinMind 認得的股票代號：看起來已經像代號就直接試，抓不到再用名稱查一次
+// 反查：已經知道代號了，查它對應的正確中文股票名稱（用於試算表只填代號、沒填名稱的情況）
+async function lookupFinMindStockName(code){
+  const cache = await ensureFinMindStockInfoCache();
+  const hit = cache.find(r=> r.stock_id === code);
+  return hit ? hit.stock_name : null;
+}
+// 嘗試把使用者輸入解析成 FinMind 認得的股票代號：看起來已經像代號就直接試，抓不到再用名稱查一次；
+// 如果輸入本來就只是代號（沒有中文名稱），另外反查一次正確名稱，確保畫面顯示的是公司名稱而不是代號本身
 async function resolveFinMindSymbolAndPrice(rawInput, guessedSymbol){
-  const looksLikeCode = /^[0-9]{2,6}[A-Za-z]{0,2}$/.test(guessedSymbol);
+  const looksLikeCode = /^[0-9]{2,6}[A-Za-z]{0,2}$/.test((guessedSymbol||'').trim());
+  const inputLooksLikeCode = /^[0-9]{2,6}[A-Za-z]{0,2}$/.test((rawInput||'').trim());
   if(looksLikeCode){
     const result = await fetchFinMindPrice(guessedSymbol);
-    if(result) return { finmindId: guessedSymbol, result };
+    if(result){
+      let name = rawInput;
+      if(inputLooksLikeCode){
+        try{ const properName = await lookupFinMindStockName(guessedSymbol); if(properName) name = properName; }catch(e){ /* 查不到名稱就先用代號頂著，不影響股價 */ }
+      }
+      return { finmindId: guessedSymbol, result, name };
+    }
   }
   const id = await lookupFinMindStockId(rawInput);
   if(id){
     const result = await fetchFinMindPrice(id);
-    if(result) return { finmindId: id, result };
+    if(result) return { finmindId: id, result, name: rawInput };
   }
   return null;
 }
