@@ -360,9 +360,10 @@ const state = {
     amount: '',
     amountEdited: false,
     realized: '',
+    account: '',
   },
   avgSimDraft: { shares: '', price: '' },
-  importDraft: { date: '', symbolInput: '', shares: '', cost: '' },
+  importDraft: { date: '', symbolInput: '', shares: '', cost: '', account: '' },
   alertDraft: { symbol: '', type: 'target', price: '' },
   plImportDraft: { year: '', category: 'trade', amount: '', note: '' },
   reverseDraft: { targetAvg: '', buyPrice: '' },
@@ -370,6 +371,8 @@ const state = {
   plMonthlyCollapsed: true,
   plImportedListCollapsed: true,
   plExpandedYear: null,
+  portfolioAccountFilter: '全部',       // 持股總覽的帳戶篩選頁籤，'全部' 代表不分帳戶合併顯示
+  txExpandedSymbol: null,               // 交易紀錄頁籤裡，目前展開中的股票代號（一次只展開一檔）
   feeSettings: {
     buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%
     sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
@@ -418,11 +421,13 @@ function escapeAttr(s){
 /* ================= 持股計算（由交易紀錄推導） ================= */
 // 買進成本會自動內含買進手續費；賣出時若該筆交易有手動輸入的已實現損益，優先採用該金額，
 // 否則依目前費率設定（手續費＋證交稅）自動試算。回傳持股表，以及每筆賣出交易實際採用的已實現損益（供交易紀錄頁籤顯示）。
-function computeHoldings(){
+function computeHoldings(accountFilter){
   const holdings = {};
   const realizedById = {};
   const fee = state.feeSettings;
-  const txs = [...state.transactions].sort((a,b)=> a.date.localeCompare(b.date) || a.id-b.id);
+  const txs = [...state.transactions]
+    .filter(t=> !accountFilter || accountFilter==='全部' || (t.account||'未分類')===accountFilter)
+    .sort((a,b)=> a.date.localeCompare(b.date) || a.id-b.id);
   txs.forEach(t=>{
     if(!holdings[t.symbol]) holdings[t.symbol] = { shares:0, avgCost:0, realizedPL:0 };
     const h = holdings[t.symbol];
@@ -467,6 +472,7 @@ function computeUnrealized(h, currentPrice){
 }
 
 function toggleFeeSettings(){ state.feeSettingsCollapsed = !state.feeSettingsCollapsed; render(); }
+function toggleTxSymbolGroup(sym){ state.txExpandedSymbol = (state.txExpandedSymbol === sym) ? null : sym; render(); }
 function togglePlMonthlyView(){ state.plMonthlyCollapsed = !state.plMonthlyCollapsed; render(); }
 function togglePlYear(y){ state.plExpandedYear = (state.plExpandedYear === y) ? null : y; render(); }
 function togglePlImportedList(){ state.plImportedListCollapsed = !state.plImportedListCollapsed; render(); }
@@ -836,11 +842,12 @@ function addTransaction(){
 
   const date = draft.date || new Date().toISOString().slice(0,10);
   const type = draft.type;
+  const account = (draft.account||'').trim();
   let realized = null;
   if(type==='sell'){
-    const h = computeHoldings().holdings[symbol];
+    const h = computeHoldings(account||'全部').holdings[symbol];
     if(!h || h.shares < shares){
-      alert('賣出股數超過目前持有股數，請確認後再新增。');
+      alert(account ? `「${account}」這個帳戶裡，${symbol} 的持股不足，賣出股數超過該帳戶目前持有股數。` : '賣出股數超過目前持有股數，請確認後再新增。');
       return;
     }
     realized = draft.realized !== '' ? parseFloat(draft.realized) : null;
@@ -848,8 +855,8 @@ function addTransaction(){
     ensureStockTracked(symbol);
   }
 
-  state.transactions.push({ id: state.nextTransactionId++, symbol, type, shares, price, date, realized });
-  state.txDraft = { date, symbolInput:'', type, shares:'', price:'', amount:'', amountEdited:false, realized:'' };
+  state.transactions.push({ id: state.nextTransactionId++, symbol, type, shares, price, date, realized, account });
+  state.txDraft = { date, symbolInput:'', type, shares:'', price:'', amount:'', amountEdited:false, realized:'', account };
   render();
 }
 /* ================= 從 Google 試算表匯入既有持股 ================= */
@@ -861,6 +868,7 @@ const SHEET_HEADER_ALIASES = {
   totalCost: ['總成本','持股總成本','總金額','成本總額','總持股成本','total cost','totalcost','cost'],
   date: ['日期','起始日期','持有日期','買進日期','交易日期','date'],
   plAmount: ['損益金額','損益','已實現損益','金額','amount','pl','profit','realized'],
+  account: ['帳戶','戶頭','券商','account','broker'],
 };
 // 簡易 CSV 解析器（自己寫的，不依賴外部函式庫，避免外部 CDN 載入失敗導致整個功能壞掉）
 // 支援標準逗號分隔、雙引號欄位（含欄位內逗號、換行、跳脫雙引號 ""），第一列當標題
@@ -926,11 +934,13 @@ function mapSheetRows(objRows){
   const sharesKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.shares);
   const costKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.totalCost);
   const dateKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.date);
+  const accountKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.account);
   return objRows.map((row,i)=>{
     const symbolRaw = symbolKey ? String(row[symbolKey]||'').trim() : '';
     const sharesRaw = sharesKey ? String(row[sharesKey]||'').replace(/,/g,'').trim() : '';
     const costRaw = costKey ? String(row[costKey]||'').replace(/,/g,'').trim() : '';
     const dateRaw = dateKey ? String(row[dateKey]||'').trim() : '';
+    const account = accountKey ? String(row[accountKey]||'').trim() : '';
     if(!symbolRaw && !sharesRaw && !costRaw) return null; // 整列空白就跳過
     const shares = parseFloat(sharesRaw);
     const totalCost = parseFloat(costRaw);
@@ -941,7 +951,7 @@ function mapSheetRows(objRows){
     if(!symbolRaw) errorMsg = '缺少股票代號／名稱';
     else if(!shares || shares<=0) errorMsg = '股數不是有效數字';
     else if(!totalCost || totalCost<=0) errorMsg = '總成本不是有效數字';
-    return { rowIndex:i+2, symbolRaw, symbol, shares, totalCost, avgCost, date, errorMsg, include: !errorMsg };
+    return { rowIndex:i+2, symbolRaw, symbol, shares, totalCost, avgCost, date, account, errorMsg, include: !errorMsg };
   }).filter(Boolean);
 }
 // 「已實現損益」試算表匯入用：股票代號、損益金額、交易日期
@@ -1079,11 +1089,11 @@ async function confirmSheetImport(){
         ensureStockTracked(r.symbol, r.symbolRaw, r.avgCost);
       }
     }
-    state.transactions = state.transactions.filter(t=> !(t.imported && t.symbol===r.symbol));
+    state.transactions = state.transactions.filter(t=> !(t.imported && t.symbol===r.symbol && (t.account||'')===(r.account||'')));
     state.transactions.push({
       id: state.nextTransactionId++, symbol: r.symbol, type:'buy',
       shares: r.shares, price: r.avgCost, date: r.date || new Date().toISOString().slice(0,10),
-      realized:null, skipFee:true, imported:true, importSource:'sheet',
+      realized:null, skipFee:true, imported:true, importSource:'sheet', account: r.account||'',
     });
   }
   state.sheetImport.importing = false;
@@ -1129,12 +1139,16 @@ function removeTransaction(id){
   render();
 }
 // 持股總覽的「一鍵刪除」：把某檔股票的所有交易紀錄整批刪掉，方便輸錯時重新開始（不影響其他股票）
+function selectPortfolioAccount(a){ state.portfolioAccountFilter = a; render(); }
 function clearHoldingForSymbol(symbol){
   const s = getStock(symbol);
-  const count = state.transactions.filter(t=>t.symbol===symbol).length;
+  const accountFilter = state.portfolioAccountFilter;
+  const matchesAccount = t => !accountFilter || accountFilter==='全部' || (t.account||'未分類')===accountFilter;
+  const count = state.transactions.filter(t=>t.symbol===symbol && matchesAccount(t)).length;
   if(!count) return;
-  if(!confirm(`確定要刪除「${s?s.name:symbol}（${symbol}）」的全部 ${count} 筆交易紀錄嗎？這會清空這檔股票的持股，且無法復原（其他股票不受影響）。`)) return;
-  state.transactions = state.transactions.filter(t=>t.symbol!==symbol);
+  const scopeLabel = (accountFilter && accountFilter!=='全部') ? `「${escapeAttr(accountFilter)}」帳戶裡` : '';
+  if(!confirm(`確定要刪除${scopeLabel}「${s?s.name:symbol}（${symbol}）」的全部 ${count} 筆交易紀錄嗎？這會清空這檔股票的持股，且無法復原（其他股票、其他帳戶不受影響）。`)) return;
+  state.transactions = state.transactions.filter(t=> !(t.symbol===symbol && matchesAccount(t)));
   render();
 }
 
@@ -1152,13 +1166,14 @@ function addImportedHolding(){
   if(!totalCost || totalCost<=0){ alert('請輸入持股總成本'); return; }
   const avgCost = totalCost / shares;
   const date = d.date || new Date().toISOString().slice(0,10);
+  const account = (d.account||'').trim();
 
   ensureStockTracked(symbol);
   state.transactions.push({
     id: state.nextTransactionId++, symbol, type:'buy', shares, price:avgCost, date,
-    realized:null, skipFee:true, imported:true,
+    realized:null, skipFee:true, imported:true, account,
   });
-  state.importDraft = { date:'', symbolInput:'', shares:'', cost:'' };
+  state.importDraft = { date:'', symbolInput:'', shares:'', cost:'', account };
   render();
 }
 
@@ -1898,24 +1913,48 @@ function renderAlertsTab(sel){
 
 function renderTransactionsTab(sel){
   const { realizedById } = computeHoldings();
-  const txs = [...state.transactions].sort((a,b)=> b.date.localeCompare(a.date) || b.id-a.id);
   const typeLabel = { buy:'買進', sell:'賣出' };
-  const rows = txs.map(t=>{
-    const s = getStock(t.symbol);
-    const amount = t.shares*t.price;
-    const realizedCell = t.type==='sell'
-      ? (()=>{ const r = realizedById[t.id]; return r===undefined ? '－' : `<span class="${r>=0?'up-color':'down-color'}">${r>=0?'+':''}${fmt(r,0)}</span>`; })()
-      : '－';
-    return `<tr>
-      <td>${t.date}</td>
-      <td>${s ? s.name : t.symbol} <span class="mono" style="color:var(--text-faint)">${t.symbol}</span></td>
-      <td><span class="tag ${t.type==='buy'?'bull':'bear'}">${typeLabel[t.type]}</span>${t.imported?' <span class="tag neutral" title="由「持股總覽」匯入的期初持股，不重複計算手續費">期初匯入</span>':''}</td>
-      <td>${fmt(t.shares,0)}</td>
-      <td>${fmt(t.price)}</td>
-      <td>${fmt(amount,0)}</td>
-      <td>${realizedCell}</td>
-      <td><button class="alert-del" onclick="removeTransaction(${t.id})">✕</button></td>
-    </tr>`;
+
+  // 依股票分組，每檔股票可收合展開（因為零股分批買入交易筆數會很多）
+  const bySymbol = {};
+  state.transactions.forEach(t=>{
+    if(!bySymbol[t.symbol]) bySymbol[t.symbol] = [];
+    bySymbol[t.symbol].push(t);
+  });
+  const symbolList = Object.keys(bySymbol).sort((a,b)=>{
+    const latestA = bySymbol[a].reduce((m,t)=> t.date>m?t.date:m, '');
+    const latestB = bySymbol[b].reduce((m,t)=> t.date>m?t.date:m, '');
+    return latestB.localeCompare(latestA);
+  });
+
+  const rows = symbolList.map(sym=>{
+    const s = getStock(sym);
+    const txsForSymbol = [...bySymbol[sym]].sort((a,b)=> b.date.localeCompare(a.date) || b.id-a.id);
+    const expanded = state.txExpandedSymbol === sym;
+    const netShares = txsForSymbol.reduce((sum,t)=> sum + (t.type==='buy'?t.shares:-t.shares), 0);
+    const subRows = expanded ? txsForSymbol.map(t=>{
+      const amount = t.shares*t.price;
+      const realizedCell = t.type==='sell'
+        ? (()=>{ const r = realizedById[t.id]; return r===undefined ? '－' : `<span class="${r>=0?'up-color':'down-color'}">${r>=0?'+':''}${fmt(r,0)}</span>`; })()
+        : '－';
+      return `<tr>
+        <td>${t.date}</td>
+        <td><span class="tag ${t.type==='buy'?'bull':'bear'}">${typeLabel[t.type]}</span>${t.imported?' <span class="tag neutral" title="由「持股總覽」匯入的期初持股，不重複計算手續費">期初匯入</span>':''}</td>
+        <td>${fmt(t.shares,0)}</td>
+        <td>${fmt(t.price)}</td>
+        <td>${fmt(amount,0)}</td>
+        <td>${t.account?escapeAttr(t.account):'－'}</td>
+        <td>${realizedCell}</td>
+        <td><button class="alert-del" onclick="removeTransaction(${t.id})">✕</button></td>
+      </tr>`;
+    }).join('') : '';
+    return `<tr style="cursor:pointer; background:var(--surface-2);" onclick="toggleTxSymbolGroup('${sym}')">
+      <td colspan="8">
+        <span class="collapsible-arrow" style="margin-right:6px;">${expanded?'▾':'▸'}</span>
+        <b>${s?s.name:sym}</b> <span class="mono" style="color:var(--text-faint);">${sym}</span>
+        <span style="color:var(--text-faint); margin-left:10px;">共 ${txsForSymbol.length} 筆交易・目前股數 ${fmt(netShares,0)}</span>
+      </td>
+    </tr>${subRows}`;
   }).join('');
 
   const fee = state.feeSettings;
@@ -1942,7 +1981,7 @@ function renderTransactionsTab(sel){
       <p class="panel-hint">股票可直接輸入代號或名稱；成交總金額會依股數×成交價自動帶出，如果跟實際扣款金額有落差，也可以直接改總金額，系統會自動回推每股成交價</p>
       <div class="card" style="padding:0; overflow-x:auto;">
         <table>
-          <thead><tr><th>日期</th><th>股票</th><th>類型</th><th>股數</th><th>成交價</th><th>金額</th><th>已實現損益</th><th></th></tr></thead>
+          <thead><tr><th>日期</th><th>類型</th><th>股數</th><th>成交價</th><th>金額</th><th>帳戶</th><th>已實現損益</th><th></th></tr></thead>
           <tbody>${rows || `<tr><td colspan="8" style="text-align:center; font-family:'Noto Sans TC',sans-serif; color:var(--text-faint); padding:16px 0;">尚無交易紀錄</td></tr>`}</tbody>
         </table>
       </div>
@@ -1955,6 +1994,10 @@ function renderTransactionsTab(sel){
           <div>
             <label>股票（代號或名稱）</label>
             <input type="text" id="tx-symbol" value="${escapeAttr(draft.symbolInput)}" placeholder="例如 2330 或 台積電" oninput="updateTxDraft('symbolInput', this.value)"/>
+          </div>
+          <div>
+            <label>帳戶（選填）</label>
+            <input type="text" id="tx-account" value="${escapeAttr(draft.account)}" placeholder="例如 台新／凱基／國泰" oninput="updateTxDraft('account', this.value)"/>
           </div>
           <div>
             <label>類型</label>
@@ -2022,6 +2065,7 @@ function renderSheetImportSection(){
       <td>${r.errorMsg?'－':fmt(r.totalCost,0)}</td>
       <td>${r.errorMsg||r.avgCost==null?'－':fmt(r.avgCost)}</td>
       <td>${r.date||'－'}</td>
+      <td>${r.account?escapeAttr(r.account):'－'}</td>
       <td>${r.errorMsg?`<span class="down-color">${r.errorMsg}</span>`:'<span class="up-color">可匯入</span>'}</td>
     </tr>`;
   }).join('');
@@ -2030,8 +2074,8 @@ function renderSheetImportSection(){
     <div class="card">
       <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 4px;">方法一：從 Google 試算表自動匯入</h3>
       <p class="panel-hint" style="margin:0 0 12px;">
-        試算表需先設定「共用」→「知道連結的任何人」可檢視；第一列請放欄位標題，系統會自動比對這些欄位（不限順序、可中英文）：<b>代號</b>（股票代號或名稱）、<b>股數</b>、<b>總成本</b>（這檔股票總共花了多少錢買進，不是每股平均成本）、<b>日期</b>（選填，起始持有日期）。
-        每次按「重新整理」都會用試算表最新內容，取代同一檔股票先前透過此功能匯入的資料，所以放心重複抓取，不會疊加成兩倍股數；但不會動到你手動新增的一般買賣交易。
+        試算表需先設定「共用」→「知道連結的任何人」可檢視；第一列請放欄位標題，系統會自動比對這些欄位（不限順序、可中英文）：<b>代號</b>（股票代號或名稱）、<b>股數</b>、<b>總成本</b>（這檔股票總共花了多少錢買進，不是每股平均成本）、<b>日期</b>（選填，起始持有日期）、<b>帳戶</b>（選填，例如台新／凱基／國泰，同一檔股票在不同帳戶請分開列）。
+        每次按「重新整理」都會用試算表最新內容，取代同一檔股票＋同一個帳戶先前透過此功能匯入的資料，所以放心重複抓取，不會疊加成兩倍股數；但不會動到你手動新增的一般買賣交易。
       </p>
       <div class="field-grid" style="grid-template-columns: 1fr;">
         <div>
@@ -2045,7 +2089,7 @@ function renderSheetImportSection(){
       ${rows.length ? `
         <div class="card" style="padding:0; overflow-x:auto; margin-top:12px;">
           <table>
-            <thead><tr><th>列</th><th>匯入</th><th>股票</th><th>股數</th><th>總成本</th><th>換算均價</th><th>日期</th><th>狀態</th></tr></thead>
+            <thead><tr><th>列</th><th>匯入</th><th>股票</th><th>股數</th><th>總成本</th><th>換算均價</th><th>日期</th><th>帳戶</th><th>狀態</th></tr></thead>
             <tbody>${rowsHtml}</tbody>
           </table>
         </div>
@@ -2140,6 +2184,10 @@ function renderImportHoldingsSection(){
             <label>持股總成本</label>
             <input type="number" id="import-cost" placeholder="例如 455000" min="0" step="0.01" value="${escapeAttr(d.cost)}" oninput="updateImportDraft('cost', this.value)"/>
           </div>
+          <div>
+            <label>帳戶（選填）</label>
+            <input type="text" id="import-account" placeholder="例如 台新／凱基／國泰" value="${escapeAttr(d.account)}" oninput="updateImportDraft('account', this.value)"/>
+          </div>
         </div>
         <button class="btn" style="margin-top:12px;" onclick="addImportedHolding()">加入持股</button>
       </div>
@@ -2148,12 +2196,22 @@ function renderImportHoldingsSection(){
 }
 
 function renderPortfolioTab(){
-  const { holdings: holdingsMap } = computeHoldings();
+  const accounts = Array.from(new Set(state.transactions.map(t=>t.account||'未分類'))).sort();
+  const showAccountTabs = accounts.length > 1 || (accounts.length===1 && accounts[0] !== '未分類');
+  const selectedAccount = state.portfolioAccountFilter;
+  const { holdings: holdingsMap } = computeHoldings(selectedAccount);
   const openSymbols = Object.keys(holdingsMap).filter(sym=>holdingsMap[sym].shares>0);
   const allRealized = Object.values(holdingsMap).reduce((sum,h)=>sum+h.realizedPL, 0);
 
+  const accountTabsHtml = showAccountTabs ? `
+    <div class="group-tabs" style="margin-bottom:12px;">
+      <button class="group-tab ${selectedAccount==='全部'?'active':''}" onclick="selectPortfolioAccount('全部')">全部帳戶</button>
+      ${accounts.map(a=>`<button class="group-tab ${selectedAccount===a?'active':''}" onclick="selectPortfolioAccount('${escapeAttr(a)}')">${escapeAttr(a)}</button>`).join('')}
+    </div>
+  ` : '';
+
   if(!openSymbols.length){
-    return `${renderImportHoldingsSection()}<div class="panel-section"><h3>持股總覽</h3><div class="card">
+    return `${renderImportHoldingsSection()}<div class="panel-section"><h3>持股總覽</h3>${accountTabsHtml}<div class="card">
       ${allRealized ? `<div class="result-line"><span class="rl-label">已實現損益總計</span><span class="rl-val ${allRealized>=0?'up-color':'down-color'}">${allRealized>=0?'+':''}${fmt(allRealized,0)}</span></div>` : `<div class="empty">尚無持股紀錄，可利用上方「匯入既有持股」快速建檔，或至「交易紀錄」頁籤新增買進紀錄</div>`}
     </div></div>`;
   }
@@ -2175,7 +2233,7 @@ function renderPortfolioTab(){
       <td>${fmt(u.grossValue,0)}</td>
       <td class="${u.unrealized>=0?'up-color':'down-color'}">${u.unrealized>=0?'+':''}${fmt(u.unrealized,0)}（${u.unrealizedPct>=0?'+':''}${fmt(u.unrealizedPct)}%）</td>
       <td>${days===null?'－':fmt(days,0)+' 天'}</td>
-      <td><button class="alert-del" onclick="clearHoldingForSymbol('${sym}')" title="刪除這檔股票所有交易紀錄，重新開始輸入">✕</button></td>
+      <td><button class="alert-del" onclick="clearHoldingForSymbol('${sym}')" title="刪除這檔股票在目前篩選帳戶下的所有交易紀錄，重新開始輸入">✕</button></td>
     </tr>`;
   }).join('');
   const totalPl = totalNetValue-totalCost;
@@ -2185,7 +2243,8 @@ function renderPortfolioTab(){
     ${renderImportHoldingsSection()}
     <div class="panel-section">
       <h3>持股總覽</h3>
-      <p class="panel-hint">持股成本＝股數×平均成本（已內含買進手續費，若為「期初匯入」則為你輸入的總成本）；未實現損益已另外扣除試算的賣出手續費與證交稅（費率可於「交易紀錄」頁籤調整）；持有天數以該股最早一筆交易紀錄起算。輸入錯誤時，最右邊 ✕ 可以刪除該檔股票的所有交易紀錄重新輸入；如果只想刪除某一筆交易，請到「交易紀錄」頁籤操作</p>
+      ${accountTabsHtml}
+      <p class="panel-hint">持股成本＝股數×平均成本（已內含買進手續費，若為「期初匯入」則為你輸入的總成本）；未實現損益已另外扣除試算的賣出手續費與證交稅（費率可於「交易紀錄」頁籤調整）；持有天數以該股最早一筆交易紀錄起算。${showAccountTabs?'目前顯示「'+escapeAttr(selectedAccount)+'」的持股；':''}輸入錯誤時，最右邊 ✕ 可以刪除該檔股票（在目前篩選帳戶下）的所有交易紀錄重新輸入；如果只想刪除某一筆交易，請到「交易紀錄」頁籤操作</p>
       <div class="card" style="padding:0; overflow-x:auto;">
         <table>
           <thead><tr><th>股票</th><th>股數</th><th>均價</th><th>持股成本</th><th>現價</th><th>市值</th><th>未實現損益</th><th>持有天數</th><th></th></tr></thead>
