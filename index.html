@@ -1,0 +1,2491 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>股市監控台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#14161A;
+    --surface:#1B1E23;
+    --surface-2:#21252B;
+    --surface-3: #262B32;
+    --border:#2B2F36;
+    --border-soft:#23262c;
+    --text:#E8E6E0;
+    --text-dim:#8B8F97;
+    --text-faint:#5B5F67;
+    --up:#E5484D;      /* 漲：紅 */
+    --down:#2FA86A;    /* 跌：綠 */
+    --accent:#E0A72E;
+    --accent-dim: rgba(224,167,46,0.14);
+    --up-dim: rgba(229,72,77,0.12);
+    --down-dim: rgba(47,168,106,0.12);
+    --radius: 3px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:'Noto Sans TC',sans-serif;
+    font-size:14px;
+    line-height:1.5;
+    min-height:100vh;
+  }
+  .mono{ font-family:'IBM Plex Mono','Noto Sans TC',monospace; font-variant-numeric: tabular-nums; }
+  .app{ display:flex; flex-direction:column; min-height:100vh; }
+
+  /* ===== Top bar ===== */
+  .topbar{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 20px; border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
+  }
+  .brand{ display:flex; align-items:baseline; gap:10px; }
+  .brand-mark{
+    width:8px;height:8px;border-radius:1px;background:var(--accent);
+    display:inline-block; transform: rotate(45deg);
+  }
+  .brand h1{ font-size:16px; font-weight:700; margin:0; letter-spacing:0.5px; }
+  .brand span.sub{ color:var(--text-faint); font-size:12px; }
+  .topbar-right{ display:flex; align-items:center; gap:16px; }
+  .clock{ color:var(--text-dim); font-size:12px; }
+  .refresh-btn{
+    background:var(--surface-2); border:1px solid var(--border); color:var(--text);
+    padding:6px 12px; border-radius:var(--radius); font-size:12px; cursor:pointer;
+    font-family:'Noto Sans TC',sans-serif; transition: border-color .15s ease;
+  }
+  .refresh-btn:hover{ border-color:var(--accent); color:var(--accent); }
+  .refresh-btn:active{ transform: translateY(1px); }
+  .notify-btn{
+    background:var(--surface-2); border:1px solid var(--border); color:var(--text-dim);
+    padding:6px 12px; border-radius:var(--radius); font-size:12px; cursor:pointer;
+    font-family:'Noto Sans TC',sans-serif; display:flex; align-items:center; gap:6px;
+  }
+  .notify-btn.granted{ border-color:var(--down); color:var(--down); }
+  .notify-btn.denied{ border-color:var(--up); color:var(--up); }
+  .notify-btn:hover{ border-color:var(--accent); color:var(--accent); }
+  .notify-dot{ width:6px; height:6px; border-radius:50%; background:currentColor; display:inline-block; }
+
+  /* ===== Layout ===== */
+  .body-grid{
+    flex:1; display:grid; grid-template-columns: 250px 1fr; min-height:0;
+  }
+  @media (max-width: 860px){
+    .body-grid{ grid-template-columns: 1fr; }
+  }
+
+  /* ===== Watchlist ===== */
+  .watchlist{
+    border-right:1px solid var(--border);
+    display:flex; flex-direction:column;
+    background:var(--surface);
+  }
+  .watchlist-head{
+    padding:10px 12px; color:var(--text-faint); font-size:11px;
+    letter-spacing:0.5px; border-bottom:1px solid var(--border-soft);
+  }
+  .group-tabs{ display:flex; gap:4px; flex-wrap:wrap; }
+  .group-tab{
+    background:var(--surface-2); border:1px solid var(--border); color:var(--text-dim);
+    padding:4px 9px; border-radius:12px; font-size:11px; cursor:pointer;
+    font-family:'Noto Sans TC',sans-serif; white-space:nowrap;
+  }
+  .group-tab:hover{ border-color:var(--text-dim); color:var(--text); }
+  .group-tab.active{ background:var(--accent-dim); border-color:var(--accent); color:var(--accent); font-weight:600; }
+  .group-tab-add{
+    background:transparent; border:1px dashed var(--border); color:var(--text-faint);
+    padding:4px 9px; border-radius:12px; font-size:11px; cursor:pointer;
+  }
+  .group-tab-add:hover{ color:var(--accent); border-color:var(--accent); }
+  .group-add-row{ display:flex; gap:6px; margin-top:8px; }
+  .group-add-row input{
+    flex:1; background:var(--surface-2); border:1px solid var(--border); color:var(--text);
+    padding:6px 8px; border-radius:var(--radius); font-size:12px; font-family:'Noto Sans TC',sans-serif;
+  }
+  .group-info-row{
+    display:flex; align-items:center; justify-content:space-between; margin-top:8px; font-size:11px;
+  }
+  .group-actions{ display:flex; gap:8px; }
+  .link-btn{
+    background:none; border:none; color:var(--text-faint); font-size:11px; cursor:pointer; padding:0;
+    font-family:'Noto Sans TC',sans-serif; text-decoration:underline; text-underline-offset:2px;
+  }
+  .link-btn:hover{ color:var(--accent); }
+  .watch-rows{ flex:1; overflow-y:auto; }
+  .watch-row{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:10px 16px; border-left:2px solid transparent; cursor:pointer;
+    border-bottom:1px solid var(--border-soft);
+    position:relative;
+  }
+  .watch-row:hover{ background:var(--surface-2); }
+  .watch-row.active{ background:var(--surface-2); border-left-color:var(--accent); }
+  .watch-row .wl-left{ display:flex; flex-direction:column; gap:2px; }
+  .watch-row .wl-name{ font-size:13px; font-weight:500; }
+  .watch-row .wl-symbol{ font-size:11px; color:var(--text-faint); }
+  .watch-row .wl-right{ text-align:right; display:flex; flex-direction:column; gap:2px; }
+  .watch-row .wl-price{ font-size:13px; font-weight:600; }
+  .watch-row .wl-chg{ font-size:11px; }
+  .watch-row .wl-remove{
+    position:absolute; right:6px; top:6px; width:16px; height:16px; border-radius:2px;
+    display:none; align-items:center; justify-content:center; color:var(--text-faint);
+    font-size:12px; background:var(--surface-3);
+  }
+  .watch-row:hover .wl-remove{ display:flex; }
+  .wl-remove:hover{ color:var(--up); }
+  .up-color{ color:var(--up); }
+  .down-color{ color:var(--down); }
+
+  .add-stock{ padding:10px 16px; border-top:1px solid var(--border-soft); }
+  .add-stock-top{ border-top:none; border-bottom:1px solid var(--border-soft); }
+  .add-stock button:disabled{ opacity:0.6; cursor:default; }
+  .add-stock select, .add-stock input, .add-stock button{
+    width:100%; background:var(--surface-2); color:var(--text); border:1px solid var(--border);
+    padding:7px 8px; border-radius:var(--radius); font-size:12px; font-family:'Noto Sans TC',sans-serif;
+  }
+  .add-stock button{ margin-top:6px; cursor:pointer; color:var(--accent); border-color:var(--border); }
+  .add-stock button:hover{ border-color:var(--accent); }
+
+  /* ===== Main ===== */
+  .main{ display:flex; flex-direction:column; min-width:0; }
+
+  .detail-head{
+    padding:18px 24px 14px; border-bottom:1px solid var(--border);
+    display:flex; align-items:flex-start; justify-content:space-between; gap:20px; flex-wrap:wrap;
+  }
+  .detail-title{ display:flex; align-items:baseline; gap:10px; }
+  .detail-title h2{ margin:0; font-size:20px; font-weight:700; }
+  .detail-title .sym{ color:var(--text-faint); font-size:13px; }
+  .detail-price-row{ display:flex; align-items:baseline; gap:12px; margin-top:8px; }
+  .detail-price{ font-size:30px; font-weight:600; }
+  .detail-chg{ font-size:14px; font-weight:500; }
+  .chips{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  .chip{
+    background:var(--surface-2); border:1px solid var(--border); border-radius:var(--radius);
+    padding:4px 9px; font-size:11px; color:var(--text-dim); display:flex; gap:6px; align-items:center;
+  }
+  .chip b{ color:var(--text); font-weight:600; }
+  .spark-wrap{ min-width:180px; }
+  .spark-wrap .spark-label{ font-size:11px; color:var(--text-faint); margin-bottom:4px; text-align:right; }
+
+  /* ===== Tabs ===== */
+  .tabs{ display:flex; gap:2px; padding:0 24px; border-bottom:1px solid var(--border); background:var(--surface); overflow-x:auto; }
+  .tab-btn{ flex-shrink:0; }
+  .tab-btn{
+    background:transparent; border:none; color:var(--text-dim); padding:11px 14px; font-size:13px;
+    cursor:pointer; border-bottom:2px solid transparent; font-family:'Noto Sans TC',sans-serif;
+  }
+  .tab-btn:hover{ color:var(--text); }
+  .tab-btn.active{ color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+
+  .tab-panel{ padding:22px 24px 40px; overflow-y:auto; flex:1; }
+  .panel-section{ margin-bottom:22px; }
+  .panel-section h3{ font-size:13px; font-weight:600; margin:0 0 10px; color:var(--text); }
+  .panel-hint{ color:var(--text-faint); font-size:12px; margin: -4px 0 14px; }
+  .field-grid{
+    display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap:10px 12px; margin-top:12px; align-items:end;
+  }
+  .collapsible-head{
+    display:flex; align-items:center; justify-content:space-between; cursor:pointer;
+    margin-bottom:8px; user-select:none;
+  }
+  .collapsible-arrow{ color:var(--text-faint); font-size:12px; }
+
+  .card{
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:16px;
+  }
+  .grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:640px){ .grid-2{ grid-template-columns:1fr; } }
+
+  label{ display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px; }
+  input[type=number], input[type=text], input[type=date], select{
+    width:100%; background:var(--surface-2); border:1px solid var(--border); color:var(--text);
+    padding:8px 9px; border-radius:var(--radius); font-family:'IBM Plex Mono',monospace; font-size:13px;
+  }
+  input:focus{ outline:none; border-color:var(--accent); }
+  .field{ margin-bottom:12px; }
+  .btn{
+    background:var(--accent-dim); border:1px solid var(--accent); color:var(--accent);
+    padding:8px 14px; border-radius:var(--radius); font-size:12px; cursor:pointer; font-weight:600;
+    font-family:'Noto Sans TC',sans-serif;
+  }
+  .btn:hover{ background:var(--accent); color:#14161A; }
+  .btn-ghost{
+    background:transparent; border:1px solid var(--border); color:var(--text-dim);
+    padding:7px 12px; border-radius:var(--radius); font-size:12px; cursor:pointer;
+  }
+  .btn-ghost:hover{ border-color:var(--text-dim); color:var(--text); }
+
+  .result-line{ display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid var(--border-soft); font-size:13px; }
+  .result-line:last-child{ border-bottom:none; }
+  .result-line .rl-label{ color:var(--text-dim); }
+  .result-line .rl-val{ font-family:'IBM Plex Mono',monospace; font-weight:600; }
+  .warn-box{
+    margin-top:12px; padding:10px 12px; border-radius:var(--radius); font-size:12px;
+    background:var(--up-dim); border:1px solid rgba(229,72,77,0.35); color:#f2a9ac;
+  }
+  .ok-box{
+    margin-top:12px; padding:10px 12px; border-radius:var(--radius); font-size:12px;
+    background:var(--down-dim); border:1px solid rgba(47,168,106,0.35); color:#8fd6ae;
+  }
+
+  /* news */
+  .news-item{ padding:12px 0; border-bottom:1px solid var(--border-soft); display:flex; gap:12px; }
+  .news-item:last-child{ border-bottom:none; }
+  .tag{
+    flex-shrink:0; align-self:flex-start; margin-top:2px; font-size:10px; padding:2px 7px; border-radius:2px; font-weight:600;
+  }
+  .tag.bull{ background:var(--up-dim); color:var(--up); }
+  .tag.bear{ background:var(--down-dim); color:var(--down); }
+  .tag.neutral{ background:var(--surface-3); color:var(--text-dim); }
+  .news-body .news-title{ font-size:13px; margin-bottom:3px; }
+  .news-meta{ font-size:11px; color:var(--text-faint); }
+
+  /* alerts */
+  .alert-row{
+    display:flex; align-items:center; justify-content:space-between; padding:10px 0;
+    border-bottom:1px solid var(--border-soft); font-size:13px;
+  }
+  .alert-row:last-child{ border-bottom:none; }
+  .alert-left{ display:flex; align-items:center; gap:10px; }
+  .alert-type{ font-size:10px; padding:2px 7px; border-radius:2px; font-weight:600; background:var(--surface-3); color:var(--text-dim); }
+  .alert-type.hit{ background:var(--accent-dim); color:var(--accent); }
+  .alert-del{ background:none; border:none; color:var(--text-faint); cursor:pointer; font-size:14px; }
+  .alert-del:hover{ color:var(--up); }
+  .add-alert-row{ display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .add-alert-row select, .add-alert-row input{ width:auto; flex:1; min-width:90px; }
+
+  /* portfolio table */
+  table{ width:100%; border-collapse:collapse; font-size:13px; }
+  th{ text-align:right; font-size:11px; color:var(--text-faint); font-weight:500; padding:8px 6px; border-bottom:1px solid var(--border); }
+  th:first-child, td:first-child{ text-align:left; }
+  td{ text-align:right; padding:9px 6px; border-bottom:1px solid var(--border-soft); font-family:'IBM Plex Mono',monospace; }
+  tfoot td{ border-top:1px solid var(--border); border-bottom:none; font-weight:600; padding-top:12px; }
+
+  .empty{ color:var(--text-faint); font-size:12px; padding:16px 0; text-align:center; }
+  .footnote{ padding:14px 24px; border-top:1px solid var(--border); color:var(--text-faint); font-size:11px; }
+</style>
+</head>
+<body>
+<div class="app" id="app"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.4.1/papaparse.min.js"></script>
+<script>
+/* ================= 資料模型 ================= */
+const STOCK_POOL = [
+  { symbol:'2330', name:'台積電',     price:988.0,  prevClose:975.0,  earnings:'07/17', foreign: 12450 },
+  { symbol:'2317', name:'鴻海',       price:203.5,  prevClose:205.0,  earnings:'08/13', foreign: -3210 },
+  { symbol:'2454', name:'聯發科',     price:1265.0, prevClose:1250.0, earnings:'07/30', foreign: 890 },
+  { symbol:'0050', name:'元大台灣50', price:192.3,  prevClose:191.8,  earnings:'—',      foreign: 5600 },
+  { symbol:'2603', name:'長榮',       price:198.0,  prevClose:203.0,  earnings:'08/07', foreign: -8940 },
+  { symbol:'2881', name:'富邦金',     price:96.4,   prevClose:95.9,   earnings:'08/11', foreign: 2130 },
+  { symbol:'3711', name:'日月光投控', price:168.0,  prevClose:170.5,  earnings:'07/25', foreign: -1560 },
+  { symbol:'2412', name:'中華電',     price:126.0,  prevClose:125.5,  earnings:'08/14', foreign: 780 },
+  { symbol:'2308', name:'台達電',     price:412.5,  prevClose:405.0,  earnings:'07/29', foreign: 4020 },
+  { symbol:'6505', name:'台塑化',     price:74.2,   prevClose:74.8,   earnings:'08/12', foreign: -600 },
+];
+
+const NEWS_BANK = {
+  '2330': [
+    { title:'先進製程稼動率維持滿載，法人上修下季毛利率預估', src:'產業快訊', time:'2 小時前', tag:'bull' },
+    { title:'美國廠區建置進度符合預期，資本支出計畫不變', src:'市場觀察', time:'5 小時前', tag:'neutral' },
+    { title:'部分客戶傳出砍單雜音，公司澄清訂單能見度良好', src:'科技日報', time:'昨天', tag:'bear' },
+  ],
+  '2317': [
+    { title:'電動車代工訂單傳出延遲，第三季展望轉趨保守', src:'產業快訊', time:'3 小時前', tag:'bear' },
+    { title:'AI伺服器出貨動能強勁，單月營收年增逾三成', src:'財經速報', time:'昨天', tag:'bull' },
+  ],
+  '2454': [
+    { title:'旗艦晶片新品發表，多家品牌廠確認採用', src:'科技日報', time:'1 小時前', tag:'bull' },
+    { title:'法人小幅下修今年出貨量預估，估值仍具支撐', src:'市場觀察', time:'昨天', tag:'neutral' },
+  ],
+  '0050': [
+    { title:'成分股權重調整生效，追蹤誤差維持低檔', src:'市場觀察', time:'昨天', tag:'neutral' },
+  ],
+  '2603': [
+    { title:'紅海航線運價持續走弱，第三季獲利承壓', src:'產業快訊', time:'4 小時前', tag:'bear' },
+    { title:'新船交付計畫完成，運能將於明年逐步開出', src:'航運週報', time:'2 天前', tag:'neutral' },
+  ],
+  '2881': [
+    { title:'壽險部門新契約保費年增，資本適足率改善', src:'財經速報', time:'今天', tag:'bull' },
+  ],
+  '3711': [
+    { title:'先進封裝訂單能見度延伸至明年上半年', src:'科技日報', time:'今天', tag:'bull' },
+  ],
+  '2412': [
+    { title:'5G用戶滲透率提升，資費調整效益逐步顯現', src:'市場觀察', time:'2 天前', tag:'neutral' },
+  ],
+  '2308': [
+    { title:'AI電源需求爆發，相關訂單能見度看至明年', src:'產業快訊', time:'今天', tag:'bull' },
+  ],
+  '6505': [
+    { title:'國際油價震盪，煉油利差短期承壓', src:'財經速報', time:'昨天', tag:'bear' },
+  ],
+};
+
+const state = {
+  stocks: STOCK_POOL.slice(0, 5).map(s => ({ ...s, history: seedHistory(s.price) })),
+  poolLeft: STOCK_POOL.slice(5),
+  watchGroups: [
+    { id:'g1', name:'全部', symbols: STOCK_POOL.slice(0,5).map(s=>s.symbol) },
+  ],
+  activeGroupId: 'g1',
+  nextGroupId: 2,
+  groupNameDraft: '',
+  showAddGroupForm: false,
+  addStockDraft: '',
+  addStockFetching: false,
+  priceRefreshing: false,
+  lastPriceRefreshAt: null,
+  lastPriceRefreshFailCount: 0,
+  twseStatus: 'idle', // idle|ok|closed|error
+  twseError: null,
+  selected: STOCK_POOL[0].symbol,
+  activeTab: 'tx',
+  transactions: [
+    { id: 1, symbol: '2330', type: 'buy', shares: 500, price: 910, date: '2026-03-10' },
+    { id: 2, symbol: '2603', type: 'buy', shares: 1000, price: 210, date: '2026-04-02' },
+  ],
+  nextTransactionId: 3,
+  txDraft: {
+    date: new Date().toISOString().slice(0,10),
+    symbolInput: '',
+    type: 'buy',
+    shares: '',
+    price: '',
+    amount: '',
+    amountEdited: false,
+    realized: '',
+  },
+  avgSimDraft: { shares: '', price: '' },
+  importDraft: { date: '', symbolInput: '', shares: '', cost: '' },
+  alertDraft: { symbol: '', type: 'target', price: '' },
+  plImportDraft: { year: '', category: 'trade', amount: '', note: '' },
+  reverseDraft: { targetAvg: '', buyPrice: '' },
+  feeSettingsCollapsed: true,
+  feeSettings: {
+    buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%
+    sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
+    minFee: 20,             // 最低手續費（元）
+    taxRate: 0.003,         // 證交稅率，股票預設 0.3%（ETF 可自行改為 0.1%）
+  },
+  alerts: [
+    { id: 1, symbol: '2330', type: 'target', price: 1050 },
+    { id: 2, symbol: '2603', type: 'stop', price: 190 },
+  ],
+  nextAlertId: 3,
+  notifiedAlerts: new Set(),
+  dividendYear: new Date().getFullYear(),
+  dividendCache: {}, // symbol -> { loading, error, records, fetchedAt }
+  finmindToken: '',
+  importedPL: [], // 手動匯入的過去損益：{ id, year, category:'trade'|'dividend', amount, note }
+  nextImportedPLId: 1,
+  sheetImport: {
+    url: '',
+    loading: false,
+    error: null,
+    rows: [],       // 解析後的每一列：{ rowIndex, symbolRaw, symbol, shares, totalCost, avgCost, date, errorMsg, include }
+    fetchedAt: null,
+  },
+  session: { username: null, loggedIn: false },
+  loginDraft: { username: '', password: '', syncUrl: '', error: null },
+  sync: { url: '', status: 'idle', lastSyncAt: null, lastSyncAttemptAt: null, error: null }, // status: idle|syncing|ok|error
+  sheetWriteback: { status: 'idle', lastAt: null, error: null }, // 把持股覆寫回 Google 試算表的狀態
+};
+let sessionPassword = null; // 只存在記憶體中，重新整理頁面就會消失，必須重新輸入
+let lastLocalSavedAt = null; // 目前這台瀏覽器本機資料的存檔時間戳記，用來跟雲端資料比對新舊
+const SYNC_URL_KEY = 'stockDashboard:v1:syncUrl'; // 這台裝置記得的 Apps Script 網址（非帳號機密，純設定值）
+
+function escapeAttr(s){
+  return String(s==null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+/* ================= 持股計算（由交易紀錄推導） ================= */
+// 買進成本會自動內含買進手續費；賣出時若該筆交易有手動輸入的已實現損益，優先採用該金額，
+// 否則依目前費率設定（手續費＋證交稅）自動試算。回傳持股表，以及每筆賣出交易實際採用的已實現損益（供交易紀錄頁籤顯示）。
+function computeHoldings(){
+  const holdings = {};
+  const realizedById = {};
+  const fee = state.feeSettings;
+  const txs = [...state.transactions].sort((a,b)=> a.date.localeCompare(b.date) || a.id-b.id);
+  txs.forEach(t=>{
+    if(!holdings[t.symbol]) holdings[t.symbol] = { shares:0, avgCost:0, realizedPL:0 };
+    const h = holdings[t.symbol];
+    if(t.type==='buy'){
+      const buyFee = t.skipFee ? 0 : Math.max(t.shares*t.price*fee.buyFeeRate, fee.minFee);
+      const costAdd = t.shares*t.price + buyFee;
+      const totalShares = h.shares + t.shares;
+      h.avgCost = totalShares>0 ? (h.shares*h.avgCost + costAdd) / totalShares : 0;
+      h.shares = totalShares;
+    } else {
+      const sellShares = Math.min(t.shares, h.shares);
+      let realizedForThis;
+      if(t.realized !== null && t.realized !== undefined && !Number.isNaN(t.realized)){
+        realizedForThis = t.realized;
+      } else {
+        const sellValue = sellShares*t.price;
+        const sellFee = Math.max(sellValue*fee.sellFeeRate, fee.minFee);
+        const sellTax = sellValue*fee.taxRate;
+        realizedForThis = sellValue - sellFee - sellTax - sellShares*h.avgCost;
+      }
+      realizedById[t.id] = realizedForThis;
+      h.realizedPL += realizedForThis;
+      h.shares -= sellShares;
+      if(h.shares <= 0){ h.shares = 0; h.avgCost = 0; }
+    }
+  });
+  return { holdings, realizedById };
+}
+
+// 依目前費率設定，試算某筆持股「若現在全部賣出」的稅費後未實現損益
+function computeUnrealized(h, currentPrice){
+  const fee = state.feeSettings;
+  if(!h || h.shares<=0) return { shares:0, grossValue:0, estFee:0, estTax:0, netValue:0, costBasis:0, unrealized:0, unrealizedPct:0 };
+  const grossValue = h.shares*currentPrice;
+  const estFee = Math.max(grossValue*fee.sellFeeRate, fee.minFee);
+  const estTax = grossValue*fee.taxRate;
+  const netValue = grossValue - estFee - estTax;
+  const costBasis = h.shares*h.avgCost;
+  const unrealized = netValue - costBasis;
+  const unrealizedPct = costBasis>0 ? (unrealized/costBasis*100) : 0;
+  return { shares:h.shares, grossValue, estFee, estTax, netValue, costBasis, unrealized, unrealizedPct };
+}
+
+function toggleFeeSettings(){ state.feeSettingsCollapsed = !state.feeSettingsCollapsed; render(); }
+function updateFeeSettings(){
+  const buy = parseFloat(document.getElementById('fee-buy').value);
+  const sell = parseFloat(document.getElementById('fee-sell').value);
+  const min = parseFloat(document.getElementById('fee-min').value);
+  const tax = parseFloat(document.getElementById('fee-tax').value);
+  state.feeSettings = {
+    buyFeeRate: Number.isNaN(buy) ? state.feeSettings.buyFeeRate : buy/100,
+    sellFeeRate: Number.isNaN(sell) ? state.feeSettings.sellFeeRate : sell/100,
+    minFee: Number.isNaN(min) ? state.feeSettings.minFee : min,
+    taxRate: Number.isNaN(tax) ? state.feeSettings.taxRate : tax/100,
+  };
+  render();
+}
+
+/* ================= 股票輸入解析（買賣交易區：可直接輸入代號或名稱） ================= */
+function resolveSymbolInput(raw){
+  const q = (raw||'').trim();
+  if(!q) return null;
+  let match = STOCK_POOL.find(s=> s.symbol.toLowerCase() === q.toLowerCase());
+  if(match) return match.symbol;
+  match = STOCK_POOL.find(s=> s.name === q);
+  if(match) return match.symbol;
+  match = STOCK_POOL.find(s=> s.name.includes(q) || q.includes(s.name));
+  if(match) return match.symbol;
+  return q; // 找不到就當成自訂代號，允許追蹤清單以外的股票
+}
+function ensureStockTracked(symbol, customName, customPrice, customPrevClose, customSeries){
+  if(getStock(symbol)) return true;
+  const idx = state.poolLeft.findIndex(s=>s.symbol===symbol);
+  if(idx!==-1){
+    const s = state.poolLeft.splice(idx,1)[0];
+    state.stocks.push({ ...s, history: seedHistory(s.price) });
+    return true;
+  }
+  if(customPrice && customPrice>0){
+    const prevClose = (customPrevClose && customPrevClose>0) ? customPrevClose : customPrice;
+    const history = (Array.isArray(customSeries) && customSeries.length) ? customSeries : seedHistory(customPrice);
+    state.stocks.push({
+      symbol, name: customName || symbol, price: customPrice, prevClose,
+      earnings:'—', foreign:0, history,
+    });
+    return true;
+  }
+  return false;
+}
+
+/* ================= 持有天數：以該股最早一筆交易紀錄為準 ================= */
+function firstTxDate(symbol){
+  const dates = state.transactions.filter(t=>t.symbol===symbol).map(t=>t.date);
+  if(!dates.length) return null;
+  return dates.reduce((a,b)=> a<b?a:b);
+}
+function holdingDays(symbol){
+  const d = firstTxDate(symbol);
+  if(!d) return null;
+  const start = new Date(d+'T00:00:00');
+  const now = new Date();
+  const diffMs = now - start;
+  return Math.max(0, Math.floor(diffMs / 86400000));
+}
+
+/* ================= 持股快照：計算某日期「之前」持有的股數（配息資格判定用） ================= */
+function holdingsAsOf(symbol, cutoffDateExclusive){
+  let shares = 0, avgCost = 0;
+  const fee = state.feeSettings;
+  const txs = state.transactions
+    .filter(t=>t.symbol===symbol && t.date < cutoffDateExclusive)
+    .sort((a,b)=> a.date.localeCompare(b.date) || a.id-b.id);
+  txs.forEach(t=>{
+    if(t.type==='buy'){
+      const buyFee = Math.max(t.shares*t.price*fee.buyFeeRate, fee.minFee);
+      const totalShares = shares + t.shares;
+      avgCost = totalShares>0 ? (shares*avgCost + t.shares*t.price + buyFee) / totalShares : 0;
+      shares = totalShares;
+    } else {
+      shares -= Math.min(t.shares, shares);
+      if(shares<=0){ shares=0; avgCost=0; }
+    }
+  });
+  return shares;
+}
+
+/* ================= 瀏覽器通知 ================= */
+function notifySupported(){ return 'Notification' in window; }
+
+function notifyBtnClass(){
+  if(!notifySupported()) return 'notify-btn denied';
+  if(Notification.permission === 'granted') return 'notify-btn granted';
+  if(Notification.permission === 'denied') return 'notify-btn denied';
+  return 'notify-btn';
+}
+function notifyBtnLabel(){
+  if(!notifySupported()) return '瀏覽器不支援通知';
+  if(Notification.permission === 'granted') return '通知已啟用';
+  if(Notification.permission === 'denied') return '通知已被封鎖';
+  return '啟用瀏覽器通知';
+}
+function handleNotifyClick(){
+  if(!notifySupported()){ return; }
+  if(Notification.permission === 'default'){
+    Notification.requestPermission().then(()=> render());
+  } else if(Notification.permission === 'granted'){
+    sendTestNotification();
+  } else {
+    alert('瀏覽器通知已被封鎖，請至瀏覽器網站設定中手動允許此頁面的通知權限。');
+  }
+}
+function sendTestNotification(){
+  if(!notifySupported() || Notification.permission !== 'granted') return;
+  const n = new Notification('股市監控台・測試通知', {
+    body: '這是一則範例：台積電 已達目標價 1,050.00（現價 1,052.30）',
+    tag: 'stock-alert-test',
+  });
+  n.onclick = () => window.focus();
+}
+function fireAlertNotification(alertObj, stock){
+  if(!notifySupported() || Notification.permission !== 'granted') return;
+  const typeLabel = alertObj.type==='target' ? '已達目標價' : '已跌破停損價';
+  const n = new Notification(`${stock.name}（${stock.symbol}）${typeLabel}`, {
+    body: `設定價 ${fmt(alertObj.price)}　現價 ${fmt(stock.price)}`,
+    tag: `stock-alert-${alertObj.id}`,
+  });
+  n.onclick = () => window.focus();
+}
+function checkAlertNotifications(){
+  state.alerts.forEach(a=>{
+    const stock = getStock(a.symbol);
+    if(!stock) return;
+    const hit = a.type==='target' ? stock.price >= a.price : stock.price <= a.price;
+    if(hit && !state.notifiedAlerts.has(a.id)){
+      fireAlertNotification(a, stock);
+      state.notifiedAlerts.add(a.id);
+    } else if(!hit && state.notifiedAlerts.has(a.id)){
+      state.notifiedAlerts.delete(a.id);
+    }
+  });
+}
+
+function seedHistory(base){
+  // 沒有真實歷史資料可用時的預設值：畫一條平線，不再假裝有波動
+  return Array(20).fill(base);
+}
+
+/* ================= 真實股價更新（改用 FinMind 最近收盤價，不再是模擬跳動） ================= */
+// 單一檔股票：抓 FinMind 最近收盤價，更新價格與（若有給）真實歷史序列
+async function refreshStockPrice(stock){
+  try{
+    const result = await fetchFinMindPrice(stock.symbol);
+    if(!result) return false;
+    stock.price = result.price;
+    stock.prevClose = result.prevClose;
+    if(Array.isArray(result.series) && result.series.length) stock.history = result.series;
+    return true;
+  } catch(err){
+    return false;
+  }
+}
+// 全部觀察中的股票依序更新（刻意不用 Promise.all 平行送出，避免短時間內對 FinMind 送出太多同時請求）
+async function refreshAllPrices(){
+  if(state.priceRefreshing) return;
+  state.priceRefreshing = true;
+  renderUnlessTyping();
+  let failCount = 0;
+  for(const s of state.stocks){
+    const ok = await refreshStockPrice(s);
+    if(!ok) failCount++;
+  }
+  state.priceRefreshing = false;
+  state.lastPriceRefreshAt = new Date().toISOString();
+  state.lastPriceRefreshFailCount = failCount;
+  checkAlertNotifications();
+  renderUnlessTyping();
+}
+
+/* ================= 工具 ================= */
+function fmt(n, d=2){ return Number(n).toLocaleString('zh-TW', { minimumFractionDigits:d, maximumFractionDigits:d }); }
+function pct(cur, base){ return ((cur-base)/base*100); }
+function getStock(sym){ return state.stocks.find(s=>s.symbol===sym); }
+function chgColorClass(v){ return v >= 0 ? 'up-color' : 'down-color'; }
+function chgSign(v){ return v >= 0 ? '▲' : '▼'; }
+
+function sparkSVG(history, w=170, h=44){
+  const min = Math.min(...history), max = Math.max(...history);
+  const range = (max-min) || 1;
+  const step = w/(history.length-1);
+  const pts = history.map((v,i)=> `${(i*step).toFixed(1)},${(h - ((v-min)/range)*h).toFixed(1)}`).join(' ');
+  const up = history[history.length-1] >= history[0];
+  const color = up ? 'var(--up)' : 'var(--down)';
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+  </svg>`;
+}
+
+/* ================= 事件處理 ================= */
+function selectStock(sym){ state.selected = sym; render(); }
+function setTab(tab){ state.activeTab = tab; render(); }
+
+function getActiveGroup(){
+  return state.watchGroups.find(g=>g.id===state.activeGroupId) || state.watchGroups[0];
+}
+function selectWatchGroup(id){ state.activeGroupId = id; render(); }
+function toggleAddGroupForm(){ state.showAddGroupForm = !state.showAddGroupForm; render(); }
+function updateGroupNameDraft(value){ state.groupNameDraft = value; }
+function addWatchGroup(){
+  const name = (state.groupNameDraft||'').trim();
+  if(!name){ alert('請輸入分類名稱'); return; }
+  const id = 'g' + state.nextGroupId++;
+  state.watchGroups.push({ id, name, symbols: [] });
+  state.activeGroupId = id;
+  state.groupNameDraft = '';
+  state.showAddGroupForm = false;
+  render();
+}
+function renameWatchGroup(id){
+  const g = state.watchGroups.find(x=>x.id===id);
+  if(!g) return;
+  const name = prompt('分類名稱', g.name);
+  if(name && name.trim()) g.name = name.trim();
+  render();
+}
+function removeWatchGroup(id){
+  if(state.watchGroups.length <= 1){ alert('至少要保留一個分類頁面'); return; }
+  const g = state.watchGroups.find(x=>x.id===id);
+  if(!g) return;
+  if(!confirm(`確定要刪除分類「${g.name}」嗎？（裡面的股票不會被刪除，只是不再顯示在這個分類，其他分類或交易紀錄不受影響）`)) return;
+  state.watchGroups = state.watchGroups.filter(x=>x.id!==id);
+  if(state.activeGroupId === id) state.activeGroupId = state.watchGroups[0].id;
+  render();
+}
+function updateAddStockDraft(value){ state.addStockDraft = value; }
+async function addStockBySymbol(){
+  const raw = (state.addStockDraft||'').trim();
+  if(!raw){ alert('請輸入股票代號或名稱'); return; }
+  const symbol = resolveSymbolInput(raw);
+
+  if(ensureStockTracked(symbol)){
+    finishAddStock(symbol);
+    return;
+  }
+
+  // 不在內建模擬股票池：先用 FinMind 查最近收盤價（代號查不到會再試著用名稱反查代號），查不到才退回手動輸入
+  state.addStockFetching = true;
+  render();
+  try{
+    const resolved = await resolveFinMindSymbolAndPrice(raw, symbol);
+    state.addStockFetching = false;
+    if(resolved){
+      ensureStockTracked(resolved.finmindId, raw, resolved.result.price, resolved.result.prevClose, resolved.result.series);
+      finishAddStock(resolved.finmindId);
+      return;
+    }
+    const priceInput = prompt(`FinMind 查不到「${raw}」的股價資料（可能是代號或名稱打錯、興櫃股票沒有收錄，或剛好還沒有交易資料）。要改成手動輸入目前股價來建立追蹤嗎？取消則不加入。`);
+    const price = parseFloat(priceInput);
+    if(!price || price<=0){ render(); return; }
+    ensureStockTracked(symbol, raw, price);
+    finishAddStock(symbol);
+  } catch(err){
+    state.addStockFetching = false;
+    const priceInput = prompt(`連線 FinMind 查詢股價失敗（${(err&&err.message)||'網路問題'}）。要改成手動輸入目前股價來建立追蹤嗎？取消則不加入。`);
+    const price = parseFloat(priceInput);
+    if(!price || price<=0){ render(); return; }
+    ensureStockTracked(symbol, raw, price);
+    finishAddStock(symbol);
+  }
+}
+function finishAddStock(symbol){
+  const group = getActiveGroup();
+  if(!group.symbols.includes(symbol)) group.symbols.push(symbol);
+  if(!state.selected) state.selected = symbol;
+  state.addStockDraft = '';
+  render();
+}
+function removeStockFromGroup(sym){
+  const group = getActiveGroup();
+  group.symbols = group.symbols.filter(s=>s!==sym);
+  if(state.selected === sym){
+    const remaining = group.symbols.length ? group.symbols : state.stocks.map(s=>s.symbol);
+    state.selected = remaining[0];
+  }
+  render();
+}
+
+// 加碼攤平計算：純試算，不會寫入交易紀錄。使用者確認要買進後，可一鍵帶入交易紀錄頁籤。
+function avgSimResultHtml(symbol){
+  const h = computeHoldings().holdings[symbol] || { shares:0, avgCost:0 };
+  const shares = parseFloat(state.avgSimDraft.shares);
+  const price = parseFloat(state.avgSimDraft.price);
+  if(!shares || shares<=0 || !price || price<=0) return '';
+  const fee = state.feeSettings;
+  const buyFee = Math.max(shares*price*fee.buyFeeRate, fee.minFee);
+  const costAdd = shares*price + buyFee;
+  const totalShares = h.shares + shares;
+  const newAvg = totalShares>0 ? (h.shares*h.avgCost + costAdd) / totalShares : 0;
+  return `
+    <div class="result-line"><span class="rl-label">本次所需資金（含買進手續費）</span><span class="rl-val">${fmt(costAdd,0)}</span></div>
+    <div class="result-line"><span class="rl-label">加碼後總股數</span><span class="rl-val">${fmt(totalShares,0)} 股</span></div>
+    <div class="result-line"><span class="rl-label">加碼後新平均成本</span><span class="rl-val">${fmt(newAvg)}</span></div>
+    <div class="ok-box">這只是試算，不會建立任何交易紀錄</div>
+    <button class="btn" style="margin-top:8px; width:100%;" onclick="goToTransactionWithDraft('${symbol}', ${shares}, ${price})">若真的要買進，帶入「交易紀錄」表單</button>
+    <p class="panel-hint" style="margin:6px 0 0;">按下後只會切換到「交易紀錄」頁籤並帶入股數與價格，仍需你自己按「新增紀錄」才會真的變成一筆交易；不按也完全不影響任何紀錄</p>
+  `;
+}
+function updateAvgSimDraft(symbol, field, value){
+  state.avgSimDraft[field] = value;
+  const box = document.getElementById('avg-sim-result');
+  if(box) box.innerHTML = avgSimResultHtml(symbol);
+}
+function goToTransactionWithDraft(symbol, shares, price){
+  state.txDraft = {
+    date: new Date().toISOString().slice(0,10),
+    symbolInput: symbol, type:'buy',
+    shares: String(shares), price: String(price),
+    amount: '', amountEdited:false, realized:'',
+  };
+  state.avgSimDraft = { shares:'', price:'' };
+  state.activeTab = 'tx';
+  render();
+}
+
+/* ================= 買賣交易區：受控表單狀態（避免每 3 秒的自動報價重畫把輸入內容洗掉） ================= */
+function updateTxDraft(field, value){
+  state.txDraft[field] = value;
+  if((field==='shares' || field==='price') && !state.txDraft.amountEdited){
+    const shares = parseFloat(state.txDraft.shares);
+    const price = parseFloat(state.txDraft.price);
+    const amountField = document.getElementById('tx-amount');
+    if(shares>0 && price>0){
+      const amt = +(shares*price).toFixed(2);
+      state.txDraft.amount = String(amt);
+      if(amountField) amountField.value = amt;
+    } else {
+      state.txDraft.amount = '';
+      if(amountField) amountField.value = '';
+    }
+  }
+}
+function updateTxAmount(value){
+  state.txDraft.amount = value;
+  state.txDraft.amountEdited = value !== '';
+}
+function handleTxTypeChange(val){
+  state.txDraft.type = val;
+  const field = document.getElementById('tx-realized-field');
+  if(field) field.style.display = val==='sell' ? 'block' : 'none';
+}
+
+function addTransaction(){
+  const draft = state.txDraft;
+  const symbol = resolveSymbolInput(draft.symbolInput);
+  if(!symbol){ alert('請輸入股票代號或名稱'); return; }
+  const shares = parseFloat(draft.shares);
+  if(!shares || shares<=0){ alert('請輸入股數'); return; }
+
+  // 成交總金額若被手動修改過，以金額回推每股成交價，確保與加碼／損益計算一致
+  let price;
+  if(draft.amount !== '' && draft.amount !== null && draft.amountEdited){
+    const amount = parseFloat(draft.amount);
+    if(!amount || amount<=0){ alert('請輸入正確的成交總金額'); return; }
+    price = amount/shares;
+  } else {
+    price = parseFloat(draft.price);
+    if(!price || price<=0){ alert('請輸入成交價，或直接輸入成交總金額'); return; }
+  }
+
+  const date = draft.date || new Date().toISOString().slice(0,10);
+  const type = draft.type;
+  let realized = null;
+  if(type==='sell'){
+    const h = computeHoldings().holdings[symbol];
+    if(!h || h.shares < shares){
+      alert('賣出股數超過目前持有股數，請確認後再新增。');
+      return;
+    }
+    realized = draft.realized !== '' ? parseFloat(draft.realized) : null;
+  } else {
+    ensureStockTracked(symbol);
+  }
+
+  state.transactions.push({ id: state.nextTransactionId++, symbol, type, shares, price, date, realized });
+  state.txDraft = { date, symbolInput:'', type, shares:'', price:'', amount:'', amountEdited:false, realized:'' };
+  render();
+}
+/* ================= 從 Google 試算表匯入既有持股 ================= */
+// 試算表需開啟「知道連結的任何人可檢視」；接受一般編輯網址或已發布的 CSV 連結。
+// 欄位標題採模糊比對，不要求順序，可用中文或英文（見 HEADER_ALIASES）。
+const SHEET_HEADER_ALIASES = {
+  symbol: ['代號','股票代號','代碼','股票代碼','股票','symbol','stock','code'],
+  shares: ['股數','持有股數','數量','symbol shares','shares','qty','quantity'],
+  totalCost: ['總成本','持股總成本','總金額','成本總額','總持股成本','total cost','totalcost','cost'],
+  date: ['日期','起始日期','持有日期','買進日期','date'],
+};
+function buildSheetCsvUrl(rawUrl){
+  const url = (rawUrl||'').trim();
+  if(!url) return null;
+  if(/output=csv|format=csv|tqx=out:csv/.test(url)) return url; // 已經是可直接匯出 CSV 的連結
+  const m = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if(!m) return null;
+  const id = m[1];
+  const gidMatch = url.match(/[?#&]gid=([0-9]+)/);
+  const gid = gidMatch ? gidMatch[1] : '0';
+  return `https://docs.google.com/spreadsheets/d/${id}/gviz/tq?tqx=out:csv&gid=${gid}`;
+}
+function normalizeHeaderText(h){ return String(h||'').trim().toLowerCase(); }
+function findSheetHeaderKey(headers, aliasList){
+  const normed = headers.map(h=>({ raw:h, norm:normalizeHeaderText(h) }));
+  for(const alias of aliasList){ const hit = normed.find(h=>h.norm===alias.toLowerCase()); if(hit) return hit.raw; }
+  for(const alias of aliasList){ const hit = normed.find(h=>h.norm.includes(alias.toLowerCase())); if(hit) return hit.raw; }
+  return null;
+}
+function normalizeSheetDate(raw){
+  const s = (raw||'').trim();
+  if(!s) return '';
+  const m = s.match(/^(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})/);
+  if(m) return `${m[1]}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? '' : d.toISOString().slice(0,10);
+}
+function mapSheetRows(objRows){
+  if(!objRows.length) return [];
+  const headers = Object.keys(objRows[0]);
+  const symbolKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.symbol);
+  const sharesKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.shares);
+  const costKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.totalCost);
+  const dateKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.date);
+  return objRows.map((row,i)=>{
+    const symbolRaw = symbolKey ? String(row[symbolKey]||'').trim() : '';
+    const sharesRaw = sharesKey ? String(row[sharesKey]||'').replace(/,/g,'').trim() : '';
+    const costRaw = costKey ? String(row[costKey]||'').replace(/,/g,'').trim() : '';
+    const dateRaw = dateKey ? String(row[dateKey]||'').trim() : '';
+    if(!symbolRaw && !sharesRaw && !costRaw) return null; // 整列空白就跳過
+    const shares = parseFloat(sharesRaw);
+    const totalCost = parseFloat(costRaw);
+    const avgCost = (shares>0 && totalCost>0) ? totalCost/shares : null;
+    const symbol = symbolRaw ? resolveSymbolInput(symbolRaw) : null;
+    const date = normalizeSheetDate(dateRaw);
+    let errorMsg = null;
+    if(!symbolRaw) errorMsg = '缺少股票代號／名稱';
+    else if(!shares || shares<=0) errorMsg = '股數不是有效數字';
+    else if(!totalCost || totalCost<=0) errorMsg = '總成本不是有效數字';
+    return { rowIndex:i+2, symbolRaw, symbol, shares, totalCost, avgCost, date, errorMsg, include: !errorMsg };
+  }).filter(Boolean);
+}
+function updateSheetImportUrl(value){ state.sheetImport.url = value; }
+async function fetchSheetImport(){
+  const rawUrl = document.getElementById('sheet-import-url').value;
+  state.sheetImport.url = rawUrl;
+  const csvUrl = buildSheetCsvUrl(rawUrl);
+  if(!csvUrl){
+    state.sheetImport.error = '看不出這是 Google 試算表的連結，請確認貼的是試算表網址';
+    render();
+    return;
+  }
+  state.sheetImport.loading = true;
+  state.sheetImport.error = null;
+  render();
+  try{
+    const resp = await fetch(csvUrl);
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const text = await resp.text();
+    const parsed = Papa.parse(text.trim(), { header:true, skipEmptyLines:true });
+    state.sheetImport.rows = mapSheetRows(parsed.data);
+    state.sheetImport.fetchedAt = new Date().toISOString();
+    if(!state.sheetImport.rows.length){
+      state.sheetImport.error = '有連上試算表，但沒有解析到任何資料列，請確認第一列是欄位標題（例如：代號、股數、總成本）';
+    }
+  } catch(err){
+    state.sheetImport.error = (err && err.message) || '讀取失敗，請確認試算表已開啟「知道連結的任何人可檢視」，且瀏覽器能連上 Google';
+    state.sheetImport.rows = [];
+  }
+  state.sheetImport.loading = false;
+  render();
+}
+function toggleSheetImportRow(idx){
+  const row = state.sheetImport.rows[idx];
+  if(!row || row.errorMsg) return;
+  row.include = !row.include;
+  render();
+}
+// 匯入時，同一檔股票先前透過「匯入既有持股」建立的紀錄會被取代（用試算表最新的股數/成本），
+// 避免每次重新整理都疊加成雙倍股數；未出現在試算表中的股票、以及一般手動新增的買賣交易則不受影響。
+function confirmSheetImport(){
+  const rows = state.sheetImport.rows.filter(r=> r.include && !r.errorMsg && r.symbol);
+  if(!rows.length){ alert('沒有勾選任何可匯入的資料列'); return; }
+  rows.forEach(r=>{
+    state.transactions = state.transactions.filter(t=> !(t.imported && t.symbol===r.symbol));
+    ensureStockTracked(r.symbol);
+    state.transactions.push({
+      id: state.nextTransactionId++, symbol: r.symbol, type:'buy',
+      shares: r.shares, price: r.avgCost, date: r.date || new Date().toISOString().slice(0,10),
+      realized:null, skipFee:true, imported:true, importSource:'sheet',
+    });
+  });
+  state.sheetImport.rows = [];
+  render();
+}
+
+// 把目前持股（股數、換算後的總成本、最早交易日期）覆寫回 Google 試算表的「holdings」分頁，
+// 需要用 Google Apps Script Web App（跟雲端同步共用同一個網址），且該網址要有 writeHoldings 這個功能
+// （見「雲端同步」頁籤說明的更新版程式碼）。這是「整批覆寫」，會直接取代 holdings 分頁的全部內容。
+async function pushHoldingsToSheet(){
+  if(!state.sync.url){ alert('請先在「交易紀錄」頁籤的「雲端同步」填入 Apps Script 網址'); return; }
+  const { holdings } = computeHoldings();
+  const rows = Object.keys(holdings)
+    .filter(sym=>holdings[sym].shares>0)
+    .map(sym=>{
+      const h = holdings[sym];
+      const s = getStock(sym);
+      return { symbol: sym, name: s?s.name:sym, shares: h.shares, totalCost: +(h.shares*h.avgCost).toFixed(2), date: firstTxDate(sym) || '' };
+    });
+  if(!confirm(`確定要用目前的 ${rows.length} 檔持股，覆寫掉試算表裡「holdings」分頁的內容嗎？這個動作會直接取代，無法復原（但不影響試算表其他分頁）。`)) return;
+
+  state.sheetWriteback = { status:'syncing', lastAt:null, error:null };
+  render();
+  try{
+    const headers = { 'Content-Type': 'text/plain;charset=utf-8' };
+    const resp = await fetch(state.sync.url, {
+      method:'POST', headers,
+      body: JSON.stringify({ action:'writeHoldings', rows }),
+    });
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const json = await resp.json();
+    if(!json || !json.ok) throw new Error((json && json.error) || '寫入失敗，請確認 Apps Script 是否已更新到支援 writeHoldings 的版本');
+    state.sheetWriteback = { status:'ok', lastAt: new Date().toISOString(), error:null };
+  } catch(err){
+    state.sheetWriteback = { status:'error', lastAt: new Date().toISOString(), error: (err&&err.message)||'連線失敗' };
+  }
+  render();
+}
+
+function removeTransaction(id){
+  state.transactions = state.transactions.filter(t=>t.id!==id);
+  render();
+}
+
+/* ================= 匯入既有持股（開始使用本工具前已持有的部位） ================= */
+// 以一筆「買進」交易記錄匯入，並標記 skipFee（因為填入的總成本已經是實際花費，不再另外計算買進手續費）
+// 與 imported（純粹用於畫面上標示「期初匯入」，不影響任何計算邏輯）
+function updateImportDraft(field, value){ state.importDraft[field] = value; }
+function addImportedHolding(){
+  const d = state.importDraft;
+  const symbol = resolveSymbolInput(d.symbolInput);
+  if(!symbol){ alert('請輸入股票代號或名稱'); return; }
+  const shares = parseFloat(d.shares);
+  if(!shares || shares<=0){ alert('請輸入股數'); return; }
+  const totalCost = parseFloat(d.cost);
+  if(!totalCost || totalCost<=0){ alert('請輸入持股總成本'); return; }
+  const avgCost = totalCost / shares;
+  const date = d.date || new Date().toISOString().slice(0,10);
+
+  ensureStockTracked(symbol);
+  state.transactions.push({
+    id: state.nextTransactionId++, symbol, type:'buy', shares, price:avgCost, date,
+    realized:null, skipFee:true, imported:true,
+  });
+  state.importDraft = { date:'', symbolInput:'', shares:'', cost:'' };
+  render();
+}
+
+function updateAlertDraft(field, value){ state.alertDraft[field] = value; }
+function addAlert(){
+  const d = state.alertDraft;
+  const sym = d.symbol || state.selected;
+  const type = d.type;
+  const price = parseFloat(d.price);
+  if(!price || price<=0) return;
+  state.alerts.push({ id: state.nextAlertId++, symbol: sym, type, price });
+  state.alertDraft.price = '';
+  render();
+}
+function removeAlert(id){
+  state.alerts = state.alerts.filter(a=>a.id!==id);
+  render();
+}
+
+/* ================= Render ================= */
+// 背景／非同步流程（股價更新、雲端同步、配息抓取…）完成後要重繪畫面時，改叫這個函式：
+// 如果使用者正在某個輸入框裡打字（尤其是中文注音／拼音選字中），就先跳過這次重繪，
+// 避免把打到一半的輸入打斷；資料已經更新在 state 裡，等使用者打完、畫面下一次自然重繪時就會顯示最新內容。
+function renderUnlessTyping(){
+  const el = document.activeElement;
+  if(el && ['INPUT','TEXTAREA','SELECT'].includes(el.tagName)) return;
+  render();
+}
+function render(){
+  const app = document.getElementById('app');
+
+  // 保留目前正在輸入的欄位焦點與游標位置，避免定時報價更新（每 3 秒整頁重繪）中斷打字
+  // 注意：number/date/email 等 input 類型讀取 selectionStart 會直接丟出例外，必須包在 try/catch 裡，
+  // 否則整個 render() 會中途中斷，導致畫面卡住、輸入框看起來像「跳掉」
+  const active = document.activeElement;
+  const focusId = active && active.id ? active.id : null;
+  let selStart = null, selEnd = null;
+  if(active){
+    try{
+      if(typeof active.selectionStart === 'number'){
+        selStart = active.selectionStart;
+        selEnd = active.selectionEnd;
+      }
+    }catch(e){ /* 此輸入類型不支援選取範圍，忽略即可 */ }
+  }
+
+  if(!state.session.loggedIn){
+    app.innerHTML = loginScreenHtml();
+  } else {
+    const sel = getStock(state.selected);
+
+    app.innerHTML = `
+      <div class="topbar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <h1>股市監控台</h1>
+          <span class="sub">個人持股觀測儀表板</span>
+        </div>
+        <div class="topbar-right">
+          <span class="clock mono ${state.twseStatus==='error'?'down-color':(state.twseStatus==='ok'?'up-color':'')}" title="${state.twseStatus==='ok' ? '即時報價來源：台灣證交所（交易時段內每 5 秒更新一次）' : state.twseStatus==='closed' ? '現在非交易時段（平日 09:00–13:30），暫停即時輪詢，畫面顯示的是最近收盤價' : state.twseStatus==='error' ? ('證交所即時報價連線失敗：'+escapeAttr(state.twseError||'')+'，已改用 FinMind 最近收盤價') : '尚未開始'}">
+            ${state.twseStatus==='ok' ? '即時報價中（每 5 秒）' : state.twseStatus==='closed' ? '非交易時段' : state.twseStatus==='error' ? '即時報價失敗，改用收盤價' : ''}
+          </span>
+          <span class="clock mono" title="股價更新時間">
+            ${state.lastPriceRefreshAt ? '資料更新於 ' + new Date(state.lastPriceRefreshAt).toLocaleString('zh-TW',{hour12:false}) : '尚未抓取股價'}
+            ${state.lastPriceRefreshFailCount ? `（${state.lastPriceRefreshFailCount} 檔收盤價抓取失敗）` : ''}
+          </span>
+          <span class="clock mono" title="${lastSaveStatus && lastSaveStatus.ok ? '已加密存到這台瀏覽器，重新整理或關閉分頁後，用同樣的帳密登入即可取回' : (lastSaveStatus ? '儲存失敗：'+lastSaveStatus.message : '')}">
+            ${lastSaveStatus ? (lastSaveStatus.ok ? '已自動存檔 ' + new Date(lastSaveStatus.at).toLocaleTimeString('zh-TW',{hour12:false}) : '存檔失敗') : ''}
+          </span>
+          ${state.sync.url ? `
+          <span class="clock mono ${state.sync.status==='error'?'down-color':(state.sync.status==='ok'?'up-color':'')}" title="${escapeAttr(state.sync.error||'')}">
+            ${state.sync.status==='syncing' ? '雲端同步中…' : state.sync.status==='ok' ? '雲端已同步 ' + (state.sync.lastSyncAt ? new Date(state.sync.lastSyncAt).toLocaleTimeString('zh-TW',{hour12:false}) : '') : state.sync.status==='error' ? '雲端同步失敗' : ''}
+          </span>` : ''}
+          <span class="clock mono">使用者：${escapeAttr(state.session.username)}</span>
+          <button class="btn-ghost" onclick="logout()" title="登出，之後需要重新輸入帳號密碼">登出</button>
+          <button class="btn-ghost" onclick="clearPersistedState()" title="清除這個帳號在這台瀏覽器上儲存的所有資料（交易紀錄、警示、匯入紀錄等），無法復原">清除本機資料</button>
+          <button class="${notifyBtnClass()}" onclick="handleNotifyClick()">
+            <span class="notify-dot"></span>${notifyBtnLabel()}
+          </button>
+          <button class="refresh-btn" onclick="manualRefreshPrices()" ${state.priceRefreshing?'disabled':''}>${state.priceRefreshing?'更新中…':'重新整理報價'}</button>
+        </div>
+      </div>
+
+      <div class="body-grid">
+        ${renderWatchlist()}
+        ${renderMain(sel)}
+      </div>
+
+      <div class="footnote">資料為模擬展示，非真實報價。實際部署時可串接證交所 OpenAPI／券商行情 API 取得即時價格，並接上新聞 RSS 或財經資料源。</div>
+    `;
+  }
+
+  if(focusId){
+    const el = document.getElementById(focusId);
+    if(el && typeof el.focus === 'function'){
+      el.focus();
+      if(selStart !== null && typeof el.setSelectionRange === 'function'){
+        try{ el.setSelectionRange(selStart, selEnd); }catch(e){ /* 部分 input type 不支援選取範圍，忽略即可 */ }
+      }
+    }
+  }
+  if(state.session.loggedIn) schedulePersist();
+}
+
+/* ================= 本機儲存（依使用者名稱＋密碼分開存放，存到瀏覽器 localStorage） =================
+   注意：這裡沒有伺服器，所有資料都只留在「這台瀏覽器」。密碼只用來對本機資料做簡單的可逆加密（XOR），
+   不是真正的雲端帳號系統，也無法「忘記密碼」救回——密碼錯了就無法還原資料。 */
+const OLD_STORAGE_KEY = 'stockDashboard:v1'; // 舊版（未分帳號）的資料，僅用於一次性搬移
+let persistTimer = null;
+let lastSaveStatus = null; // { ok:boolean, at:string, message?:string }
+
+function strToBytes(str){ return unescape(encodeURIComponent(str)); }
+function bytesToStr(bytes){ return decodeURIComponent(escape(bytes)); }
+function xorBytes(byteStr, key){
+  if(!key) return byteStr;
+  const keyBytes = strToBytes(key);
+  let out = '';
+  for(let i=0;i<byteStr.length;i++){
+    out += String.fromCharCode(byteStr.charCodeAt(i) ^ keyBytes.charCodeAt(i % keyBytes.length));
+  }
+  return out;
+}
+function encryptForStorage(jsonStr, password){ return btoa(xorBytes(strToBytes(jsonStr), password)); }
+function decryptFromStorage(b64, password){
+  try{ return bytesToStr(xorBytes(atob(b64), password)); }
+  catch(e){ return null; }
+}
+function userStorageKey(username){ return 'stockDashboard:v1:user:' + encodeURIComponent(username.trim().toLowerCase()); }
+
+function schedulePersist(){
+  if(!state.session.loggedIn) return;
+  if(persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(persistState, 300);
+}
+function persistState(){
+  if(!state.session.loggedIn || !sessionPassword) return;
+  try{
+    const data = {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      watchSymbols: state.stocks.map(s=>s.symbol),
+      watchStocks: state.stocks.map(s=>({ symbol:s.symbol, name:s.name, price:s.price })), // 供自訂股票（不在內建股票池）還原時使用
+      watchGroups: state.watchGroups,
+      activeGroupId: state.activeGroupId,
+      nextGroupId: state.nextGroupId,
+      selected: state.selected,
+      activeTab: state.activeTab,
+      transactions: state.transactions,
+      nextTransactionId: state.nextTransactionId,
+      feeSettings: state.feeSettings,
+      alerts: state.alerts,
+      nextAlertId: state.nextAlertId,
+      dividendYear: state.dividendYear,
+      finmindToken: state.finmindToken,
+      importedPL: state.importedPL,
+      nextImportedPLId: state.nextImportedPLId,
+      sheetImportUrl: state.sheetImport.url,
+    };
+    const encrypted = encryptForStorage(JSON.stringify(data), sessionPassword);
+    localStorage.setItem(userStorageKey(state.session.username), encrypted);
+    lastSaveStatus = { ok:true, at:data.savedAt };
+    lastEncryptedForUnload = encrypted; // 供關閉分頁前的最後一次同步使用
+    lastLocalSavedAt = data.savedAt;
+    maybeSyncPush(encrypted);
+  } catch(err){
+    lastSaveStatus = { ok:false, at:new Date().toISOString(), message:(err&&err.message)||'瀏覽器拒絕寫入本機儲存' };
+    console.warn('儲存到本機失敗', err);
+  }
+}
+
+/* ================= 雲端同步（透過 Google Apps Script Web App，存取一份加密後的資料） =================
+   伺服器只存放加密後的亂碼字串，不會知道你的密碼，也解不開內容；但要留意：只要有這個網址，
+   任何人都能對同一個使用者名稱寫入或覆蓋資料（伺服器沒有真正驗證身分），請勿把網址公開分享，
+   使用者名稱也建議取不容易被猜到的。
+   自動同步刻意節流：本機每次修改都會馬上存到瀏覽器裡，但雲端（Apps Script／Google 試算表）
+   最多一小時自動推送一次，避免把額度浪費在頻繁的背景存檔上；真的想馬上同步，用「立即同步」按鈕。 */
+const SYNC_MIN_INTERVAL_MS = 60 * 60 * 1000; // 自動同步的最短間隔：1 小時
+let lastEncryptedForUnload = null;
+function updateSyncUrlDraft(value){ state.loginDraft.syncUrl = value; }
+function maybeSyncPush(encrypted){
+  if(!state.sync.url) return;
+  // 用「嘗試時間」而非「成功時間」當節流依據，並在送出前就同步記錄下來——
+  // 否則短時間內連續呼叫（例如連續存檔好幾次）會在第一次的網路回應還沒回來前，全部都通過節流檢查而重複送出
+  const last = state.sync.lastSyncAttemptAt ? new Date(state.sync.lastSyncAttemptAt).getTime() : 0;
+  if(Date.now() - last < SYNC_MIN_INTERVAL_MS) return; // 還沒到一小時，先只存本機，不打雲端
+  state.sync.lastSyncAttemptAt = new Date().toISOString();
+  syncPush(encrypted);
+}
+function syncPush(encrypted){
+  const url = state.sync.url;
+  if(!url || !state.session.loggedIn) return;
+  state.sync.status = 'syncing';
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // 刻意用 text/plain 避免瀏覽器送出 CORS 預檢請求
+    body: JSON.stringify({ action:'save', username: state.session.username, encrypted }),
+  })
+    .then(r=>r.json())
+    .then(json=>{
+      state.sync.status = json && json.ok ? 'ok' : 'error';
+      state.sync.error = (json && json.ok) ? null : ((json && json.error) || '雲端儲存失敗');
+      state.sync.lastSyncAt = new Date().toISOString();
+      renderUnlessTyping();
+    })
+    .catch(err=>{
+      state.sync.status = 'error';
+      state.sync.error = (err && err.message) || '連不上雲端同步網址';
+      renderUnlessTyping();
+    });
+}
+// 關閉分頁／重新整理前的最後一搏：用 sendBeacon（瀏覽器保證即使頁面正在關閉也會送出），
+// 而不是一般的 fetch（分頁關閉時常常還沒送完就被瀏覽器砍斷）。不等回應、不更新畫面。
+function flushSyncOnUnload(){
+  if(!state.sync.url || !state.session.loggedIn || !lastEncryptedForUnload) return;
+  try{
+    const body = JSON.stringify({ action:'save', username: state.session.username, encrypted: lastEncryptedForUnload });
+    const blob = new Blob([body], { type:'text/plain;charset=utf-8' });
+    navigator.sendBeacon(state.sync.url, blob);
+  } catch(e){ /* 盡力就好，離開頁面時失敗也沒辦法再處理 */ }
+}
+
+// 登入成功後呼叫：向雲端拉一次資料，跟本機資料比對時間戳記，較新的一份為準
+async function syncPullAndMerge(localSavedAt){
+  const url = state.sync.url;
+  if(!url) return;
+  state.sync.status = 'syncing';
+  render();
+  try{
+    const resp = await fetch(url + (url.includes('?') ? '&' : '?') + 'action=load&username=' + encodeURIComponent(state.session.username));
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const json = await resp.json();
+    if(!json || !json.ok) throw new Error((json && json.error) || '雲端回應格式錯誤');
+    if(json.encrypted){
+      const decoded = decryptFromStorage(json.encrypted, sessionPassword);
+      let cloudData = null;
+      if(decoded){ try{ cloudData = JSON.parse(decoded); }catch(e){ cloudData = null; } }
+      if(!cloudData){
+        state.sync.status = 'error';
+        state.sync.error = '雲端資料存在，但用目前密碼解不開（可能密碼跟雲端上次儲存時不同）';
+      } else {
+        const cloudIsNewer = !localSavedAt || (cloudData.savedAt && cloudData.savedAt > localSavedAt);
+        if(cloudIsNewer){
+          resetStateForNewUser();
+          applyPersistedData(cloudData);
+        }
+        state.sync.status = 'ok';
+        state.sync.error = null;
+        state.sync.lastSyncAt = new Date().toISOString();
+      }
+    } else {
+      // 雲端還沒有這個使用者的資料：這是第一次建立雲端備份，略過自動同步節流，直接推一次
+      persistState();
+      if(lastEncryptedForUnload){ state.sync.lastSyncAttemptAt = new Date().toISOString(); syncPush(lastEncryptedForUnload); }
+      state.sync.status = 'ok';
+    }
+  } catch(err){
+    state.sync.status = 'error';
+    state.sync.error = (err && err.message) || '連不上雲端同步網址，先使用本機資料';
+  }
+  renderUnlessTyping();
+}
+function updateSyncUrlSetting(value){
+  state.sync.url = value.trim();
+  try{ localStorage.setItem(SYNC_URL_KEY, state.sync.url); }catch(e){ /* 忽略 */ }
+}
+async function manualSyncNow(){
+  if(!state.sync.url){ alert('請先在下方填入雲端同步網址'); return; }
+  await syncPullAndMerge(lastLocalSavedAt); // 依實際時間戳記比對，較新的一份為準
+  persistState(); // 把比對後「贏的那份」重新存回本機
+  if(lastEncryptedForUnload){ state.sync.lastSyncAttemptAt = new Date().toISOString(); syncPush(lastEncryptedForUnload); } // 手動按的，略過節流，直接推一次確保雲端也一致
+}
+
+// 把解密後的資料套用到目前 state（登入、或搬移舊資料時共用）
+function applyPersistedData(data){
+  if(!data || typeof data !== 'object') return;
+  if(Array.isArray(data.watchSymbols) && data.watchSymbols.length){
+    const snapshotMap = {};
+    if(Array.isArray(data.watchStocks)) data.watchStocks.forEach(s=>{ snapshotMap[s.symbol] = s; });
+    state.stocks = data.watchSymbols.map(sym=>{
+      const base = STOCK_POOL.find(s=>s.symbol===sym);
+      if(base) return { ...base, history: seedHistory(base.price) };
+      const snap = snapshotMap[sym];
+      const price = (snap && snap.price>0) ? snap.price : 1;
+      return { symbol:sym, name:(snap && snap.name) || sym, price, prevClose:price, earnings:'—', foreign:0, history: seedHistory(price) };
+    });
+    state.poolLeft = STOCK_POOL.filter(s=> !data.watchSymbols.includes(s.symbol));
+  }
+  if(Array.isArray(data.watchGroups) && data.watchGroups.length){
+    state.watchGroups = data.watchGroups;
+  } else if(Array.isArray(data.watchSymbols)){
+    // 舊版資料沒有分類頁面的概念，全部歸到一個「全部」分類，避免資料看起來憑空消失
+    state.watchGroups = [{ id:'g1', name:'全部', symbols: data.watchSymbols }];
+  }
+  if(typeof data.activeGroupId === 'string' && state.watchGroups.find(g=>g.id===data.activeGroupId)){
+    state.activeGroupId = data.activeGroupId;
+  } else {
+    state.activeGroupId = state.watchGroups[0].id;
+  }
+  if(typeof data.nextGroupId === 'number') state.nextGroupId = data.nextGroupId;
+  if(typeof data.selected === 'string') state.selected = data.selected;
+  if(typeof data.activeTab === 'string') state.activeTab = data.activeTab;
+  if(Array.isArray(data.transactions)) state.transactions = data.transactions;
+  if(typeof data.nextTransactionId === 'number') state.nextTransactionId = data.nextTransactionId;
+  if(data.feeSettings && typeof data.feeSettings === 'object') state.feeSettings = { ...state.feeSettings, ...data.feeSettings };
+  if(Array.isArray(data.alerts)) state.alerts = data.alerts;
+  if(typeof data.nextAlertId === 'number') state.nextAlertId = data.nextAlertId;
+  if(typeof data.dividendYear === 'number') state.dividendYear = data.dividendYear;
+  if(typeof data.finmindToken === 'string') state.finmindToken = data.finmindToken;
+  if(Array.isArray(data.importedPL)) state.importedPL = data.importedPL;
+  if(typeof data.nextImportedPLId === 'number') state.nextImportedPLId = data.nextImportedPLId;
+  if(typeof data.sheetImportUrl === 'string') state.sheetImport.url = data.sheetImportUrl;
+  if(!getStock(state.selected)) state.selected = state.stocks[0]?.symbol;
+}
+function resetStateForNewUser(){
+  state.stocks = STOCK_POOL.slice(0,5).map(s=>({ ...s, history: seedHistory(s.price) }));
+  state.poolLeft = STOCK_POOL.slice(5);
+  state.watchGroups = [{ id:'g1', name:'全部', symbols: STOCK_POOL.slice(0,5).map(s=>s.symbol) }];
+  state.activeGroupId = 'g1';
+  state.nextGroupId = 2;
+  state.groupNameDraft = '';
+  state.showAddGroupForm = false;
+  state.addStockDraft = '';
+  state.addStockFetching = false;
+  state.priceRefreshing = false;
+  state.lastPriceRefreshAt = null;
+  state.lastPriceRefreshFailCount = 0;
+  state.twseStatus = 'idle';
+  state.twseError = null;
+  twseSourceFailed = false;
+  if(twsePollTimer){ clearInterval(twsePollTimer); twsePollTimer = null; }
+  state.selected = STOCK_POOL[0].symbol;
+  state.activeTab = 'tx';
+  state.transactions = [];
+  state.nextTransactionId = 1;
+  state.txDraft = { date: new Date().toISOString().slice(0,10), symbolInput:'', type:'buy', shares:'', price:'', amount:'', amountEdited:false, realized:'' };
+  state.avgSimDraft = { shares:'', price:'' };
+  state.reverseDraft = { targetAvg:'', buyPrice:'' };
+  state.feeSettings = { buyFeeRate:0.001425, sellFeeRate:0.001425, minFee:20, taxRate:0.003 };
+  state.alerts = [];
+  state.nextAlertId = 1;
+  state.notifiedAlerts = new Set();
+  state.dividendYear = new Date().getFullYear();
+  state.dividendCache = {};
+  state.finmindToken = '';
+  state.importedPL = [];
+  state.nextImportedPLId = 1;
+  state.sheetImport = { url:'', loading:false, error:null, rows:[], fetchedAt:null };
+  lastSaveStatus = null;
+}
+window.addEventListener('beforeunload', () => { persistState(); flushSyncOnUnload(); }); // 離開頁面前：本機立即存一次、雲端也用 sendBeacon 補推最後一次（不受一小時節流限制）
+
+function updateLoginDraft(field, value){ state.loginDraft[field] = value; }
+function attemptLogin(){
+  const username = (state.loginDraft.username||'').trim();
+  const password = state.loginDraft.password||'';
+  const syncUrl = (state.loginDraft.syncUrl||'').trim();
+  if(!username){ state.loginDraft.error = '請輸入使用者名稱'; render(); return; }
+  if(!password){ state.loginDraft.error = '請輸入密碼'; render(); return; }
+
+  const key = userStorageKey(username);
+  let raw;
+  try{ raw = localStorage.getItem(key); }
+  catch(err){ state.loginDraft.error = '這個瀏覽器不支援本機儲存，無法登入'; render(); return; }
+
+  let localSavedAt = null;
+
+  if(!raw){
+    // 找不到這個帳號的資料：視為新使用者。但如果偵測到舊版（未分帳號）的資料，詢問是否要搬過來。
+    let migrated = false;
+    try{
+      const oldRaw = localStorage.getItem(OLD_STORAGE_KEY);
+      if(oldRaw){
+        const oldData = JSON.parse(oldRaw);
+        if(oldData && confirm('偵測到這台瀏覽器上有舊版（尚未綁定帳號）的資料，要把它匯入到「'+username+'」這個帳號嗎？')){
+          resetStateForNewUser();
+          applyPersistedData(oldData);
+          migrated = true;
+          localSavedAt = oldData.savedAt || null;
+          localStorage.removeItem(OLD_STORAGE_KEY);
+        }
+      }
+    } catch(e){ /* 舊資料損毀就當作沒有，忽略 */ }
+    if(!migrated) resetStateForNewUser();
+  } else {
+    const decoded = decryptFromStorage(raw, password);
+    let data = null;
+    if(decoded){ try{ data = JSON.parse(decoded); } catch(e){ data = null; } }
+    if(!data){
+      state.loginDraft.error = '密碼錯誤，或這台瀏覽器上的資料已損毀';
+      render();
+      return;
+    }
+    resetStateForNewUser();
+    applyPersistedData(data);
+    localSavedAt = data.savedAt || null;
+  }
+
+  state.session = { username, loggedIn:true };
+  sessionPassword = password;
+  state.loginDraft = { username:'', password:'', syncUrl:'', error:null };
+  persistState();
+
+  if(syncUrl){
+    state.sync.url = syncUrl;
+    try{ localStorage.setItem(SYNC_URL_KEY, syncUrl); }catch(e){ /* 忽略 */ }
+    syncPullAndMerge(localSavedAt);
+  } else {
+    render();
+  }
+  refreshAllPrices().then(startTWSEPolling); // 先用 FinMind 抓到最近收盤價當底，完成後才開始 TWSE 輪詢，避免兩邊資料互相蓋過去
+}
+function logout(){
+  if(!confirm('登出後需要重新輸入密碼才能取回資料，確定要登出嗎？（資料已經存在這台瀏覽器裡，不會遺失）')) return;
+  persistState();
+  state.session = { username:null, loggedIn:false };
+  sessionPassword = null;
+  resetStateForNewUser();
+  state.sync = { url:'', status:'idle', lastSyncAt:null, lastSyncAttemptAt:null, error:null };
+  state.sheetWriteback = { status:'idle', lastAt:null, error:null };
+  state.loginDraft = { username:'', password:'', syncUrl:'', error:null };
+  render();
+}
+function clearPersistedState(){
+  if(!state.session.loggedIn) return;
+  if(!confirm('確定要清除「'+state.session.username+'」在這台瀏覽器上儲存的所有資料嗎？（交易紀錄、警示、匯入紀錄等都會被清空，且無法復原，但不影響其他帳號或裝置）')) return;
+  resetStateForNewUser();
+  persistState(); // 立刻覆寫成空白（也會同步推上雲端，如果有設定同步網址的話）
+  render();
+  refreshAllPrices().then(startTWSEPolling); // 清空後這裡也會停掉輪詢，重新啟動一次
+}
+
+function loginScreenHtml(){
+  const d = state.loginDraft;
+  return `
+    <div style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;">
+      <div class="card" style="max-width:380px; width:100%;">
+        <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:4px;">
+          <span class="brand-mark"></span>
+          <h1 style="margin:0; font-size:18px;">股市監控台</h1>
+        </div>
+        <p class="panel-hint" style="margin:4px 0 16px;">輸入使用者名稱與密碼，即可取回上次存在這台瀏覽器的資料；如果是新的使用者名稱，會直接建立一份新的空白資料。</p>
+        <div class="field">
+          <label>使用者名稱</label>
+          <input type="text" id="login-username" value="${escapeAttr(d.username)}" oninput="updateLoginDraft('username', this.value)" placeholder="例如 andy" onkeydown="if(event.key==='Enter') document.getElementById('login-password').focus();"/>
+        </div>
+        <div class="field">
+          <label>密碼</label>
+          <input type="password" id="login-password" value="${escapeAttr(d.password)}" oninput="updateLoginDraft('password', this.value)" placeholder="用來讀取本機加密資料" onkeydown="if(event.key==='Enter') document.getElementById('login-syncurl').focus();"/>
+        </div>
+        <div class="field">
+          <label>雲端同步網址（選填，跨裝置才需要）</label>
+          <input type="text" id="login-syncurl" value="${escapeAttr(d.syncUrl)}" oninput="updateLoginDraft('syncUrl', this.value)" placeholder="貼上 Google Apps Script 的 /exec 網址" onkeydown="if(event.key==='Enter') attemptLogin();"/>
+        </div>
+        ${d.error ? `<div class="warn-box">${escapeAttr(d.error)}</div>` : ''}
+        <button class="btn" style="width:100%; margin-top:8px;" onclick="attemptLogin()">登入／建立帳號</button>
+        <p class="panel-hint" style="margin-top:14px; line-height:1.6;">
+          提醒：這裡沒有自己的後端伺服器，資料預設只留在「這台瀏覽器」；如果貼了雲端同步網址，會另外把加密後的資料存一份到你自己的 Google 試算表，換電腦、換瀏覽器時，貼上同一個帳號密碼＋同一個同步網址，就能取回。密碼只用來在本機及雲端做簡單加密，伺服器和我都不會知道你的密碼，也沒有辦法「忘記密碼」救回——密碼錯了就無法還原資料，請自行妥善保管。
+        </p>
+      </div>
+    </div>
+  `;
+}
+
+function renderWatchlist(){
+  const group = getActiveGroup();
+  const groupStocks = group.symbols.map(sym=>getStock(sym)).filter(Boolean);
+
+  const rows = groupStocks.map(s=>{
+    const change = pct(s.price, s.prevClose);
+    const active = s.symbol===state.selected ? 'active' : '';
+    return `
+      <div class="watch-row ${active}" onclick="selectStock('${s.symbol}')">
+        <div class="wl-left">
+          <div class="wl-name">${s.name}</div>
+          <div class="wl-symbol mono">${s.symbol}</div>
+        </div>
+        <div class="wl-right">
+          <div class="wl-price mono ${chgColorClass(change)}">${fmt(s.price)}</div>
+          <div class="wl-chg mono ${chgColorClass(change)}">${chgSign(change)} ${fmt(Math.abs(change))}%</div>
+        </div>
+        <div class="wl-remove" onclick="event.stopPropagation(); removeStockFromGroup('${s.symbol}')" title="從這個分類移除（不會刪除股票本身）">✕</div>
+      </div>`;
+  }).join('');
+
+  const groupTabs = state.watchGroups.map(g=>`
+    <button class="group-tab ${g.id===state.activeGroupId?'active':''}" onclick="selectWatchGroup('${g.id}')">${escapeAttr(g.name)}</button>
+  `).join('');
+
+  return `
+    <div class="watchlist">
+      <div class="watchlist-head">
+        <div class="group-tabs">
+          ${groupTabs}
+          <button class="group-tab-add" onclick="toggleAddGroupForm()" title="新增分類頁面">＋</button>
+        </div>
+        ${state.showAddGroupForm ? `
+          <div class="group-add-row">
+            <input type="text" id="new-group-name" value="${escapeAttr(state.groupNameDraft)}" oninput="updateGroupNameDraft(this.value)" placeholder="分類名稱，如 半導體" onkeydown="if(event.key==='Enter') addWatchGroup();"/>
+            <button class="btn-ghost" onclick="addWatchGroup()">建立</button>
+          </div>
+        ` : ''}
+        <div class="group-info-row">
+          <span>${escapeAttr(group.name)}・${groupStocks.length} 檔</span>
+          ${state.watchGroups.length>1 ? `
+            <span class="group-actions">
+              <button class="link-btn" onclick="renameWatchGroup('${group.id}')">重新命名</button>
+              <button class="link-btn" onclick="removeWatchGroup('${group.id}')">刪除分類</button>
+            </span>` : `<button class="link-btn" onclick="renameWatchGroup('${group.id}')">重新命名</button>`}
+        </div>
+      </div>
+      <div class="add-stock add-stock-top">
+        <input type="text" id="add-stock-input" value="${escapeAttr(state.addStockDraft)}" oninput="updateAddStockDraft(this.value)" placeholder="輸入代號或名稱，如 2330" onkeydown="if(event.key==='Enter') addStockBySymbol();"/>
+        <button onclick="addStockBySymbol()" ${state.addStockFetching?'disabled':''}>${state.addStockFetching?'查詢股價中…':'加入「'+escapeAttr(group.name)+'」'}</button>
+      </div>
+      <div class="watch-rows">${rows || `<div class="empty">這個分類還沒有股票，用上面欄位加入</div>`}</div>
+    </div>`;
+}
+
+function renderMain(sel){
+  if(!sel){ return `<div class="main"><div class="tab-panel"><div class="empty">請先加入股票</div></div></div>`; }
+  const change = pct(sel.price, sel.prevClose);
+  const abs = sel.price - sel.prevClose;
+
+  const tabs = [
+    ['tx','交易紀錄'],
+    ['avg','攤平計算'],
+    ['dividend','配息'],
+    ['news','個股消息'],
+    ['alerts','價格警示'],
+    ['portfolio','持股總覽'],
+    ['pl','損益統計'],
+  ];
+
+  return `
+    <div class="main">
+      <div class="detail-head">
+        <div>
+          <div class="detail-title">
+            <h2>${sel.name}</h2>
+            <span class="sym mono">${sel.symbol}</span>
+          </div>
+          <div class="detail-price-row">
+            <span class="detail-price mono ${chgColorClass(change)}">${fmt(sel.price)}</span>
+            <span class="detail-chg mono ${chgColorClass(change)}">${chgSign(change)} ${fmt(Math.abs(abs))} (${fmt(Math.abs(change))}%)</span>
+          </div>
+          <div class="chips">
+            <span class="chip">昨收 <b class="mono">${fmt(sel.prevClose)}</b></span>
+            <span class="chip">外資買賣超 <b class="mono ${sel.foreign>=0?'up-color':'down-color'}">${sel.foreign>=0?'+':''}${fmt(sel.foreign,0)}張</b></span>
+            <span class="chip">下次財報 <b>${sel.earnings}</b></span>
+          </div>
+        </div>
+        <div class="spark-wrap">
+          <div class="spark-label">近期走勢</div>
+          ${sparkSVG(sel.history)}
+        </div>
+      </div>
+
+      <div class="tabs">
+        ${tabs.map(([k,label])=>`<button class="tab-btn ${state.activeTab===k?'active':''}" onclick="setTab('${k}')">${label}</button>`).join('')}
+      </div>
+
+      <div class="tab-panel">
+        ${state.activeTab==='tx' ? renderTransactionsTab(sel) : ''}
+        ${state.activeTab==='avg' ? renderAvgTab(sel) : ''}
+        ${state.activeTab==='dividend' ? renderDividendTab() : ''}
+        ${state.activeTab==='news' ? renderNewsTab(sel) : ''}
+        ${state.activeTab==='alerts' ? renderAlertsTab(sel) : ''}
+        ${state.activeTab==='portfolio' ? renderPortfolioTab() : ''}
+        ${state.activeTab==='pl' ? renderPLSummaryTab() : ''}
+      </div>
+    </div>`;
+}
+
+function renderAvgTab(sel){
+  const h = computeHoldings().holdings[sel.symbol] || { shares:0, avgCost:0, realizedPL:0 };
+  const hasHolding = h.shares > 0;
+  const u = computeUnrealized(h, sel.price);
+  const days = holdingDays(sel.symbol);
+
+  return `
+    <div class="panel-section">
+      <h3>目前持股</h3>
+      <div class="card">
+        ${hasHolding ? `
+          <div class="result-line"><span class="rl-label">持有股數</span><span class="rl-val">${fmt(h.shares,0)} 股</span></div>
+          <div class="result-line"><span class="rl-label">持有天數</span><span class="rl-val">${days===null?'－':fmt(days,0)+' 天'}</span></div>
+          <div class="result-line"><span class="rl-label">平均成本（含買進手續費）</span><span class="rl-val">${fmt(h.avgCost)}</span></div>
+          <div class="result-line"><span class="rl-label">現在市值</span><span class="rl-val">${fmt(u.grossValue,0)}</span></div>
+          <div class="result-line"><span class="rl-label">預估賣出手續費＋證交稅</span><span class="rl-val down-color">－${fmt(u.estFee+u.estTax,0)}</span></div>
+          <div class="result-line"><span class="rl-label">未實現損益（已扣手續費＋證交稅）</span><span class="rl-val ${u.unrealized>=0?'up-color':'down-color'}">${u.unrealized>=0?'+':''}${fmt(u.unrealized,0)}（${u.unrealizedPct>=0?'+':''}${fmt(u.unrealizedPct)}%）</span></div>
+          ${h.realizedPL ? `<div class="result-line"><span class="rl-label">已實現損益</span><span class="rl-val ${h.realizedPL>=0?'up-color':'down-color'}">${h.realizedPL>=0?'+':''}${fmt(h.realizedPL,0)}</span></div>` : ''}
+        ` : (h.realizedPL ? `<div class="result-line"><span class="rl-label">已實現損益（已全數賣出）</span><span class="rl-val ${h.realizedPL>=0?'up-color':'down-color'}">${h.realizedPL>=0?'+':''}${fmt(h.realizedPL,0)}</span></div>` : `<div class="empty">尚未登記此股票的持股，請於下方輸入第一筆買進紀錄，或到「交易紀錄」頁籤新增</div>`)}
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h3>加碼攤平計算</h3>
+      <p class="panel-hint">純試算工具，輸入本次假設加碼的股數與價格，看看攤平後的新平均成本，不會建立任何交易紀錄</p>
+      <div class="grid-2">
+        <div class="card">
+          <div class="field">
+            <label>本次加碼股數</label>
+            <input type="number" id="avg-new-shares" placeholder="例如 500" min="0" value="${escapeAttr(state.avgSimDraft.shares)}" oninput="updateAvgSimDraft('${sel.symbol}', 'shares', this.value)"/>
+          </div>
+          <div class="field">
+            <label>本次買進價格</label>
+            <input type="number" id="avg-new-price" placeholder="${fmt(sel.price)}" min="0" step="0.01" value="${escapeAttr(state.avgSimDraft.price)}" oninput="updateAvgSimDraft('${sel.symbol}', 'price', this.value)"/>
+          </div>
+          <div id="avg-sim-result">${avgSimResultHtml(sel.symbol)}</div>
+        </div>
+        <div class="card">
+          ${renderReverseCalc(sel, h)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderReverseCalc(sel, h){
+  const d = state.reverseDraft;
+  return `
+    <div class="field">
+      <label>目標平均成本</label>
+      <input type="number" id="target-avg" placeholder="想攤到多少價位" step="0.01" value="${escapeAttr(d.targetAvg)}" oninput="updateReverseDraft('${sel.symbol}', 'targetAvg', this.value)"/>
+    </div>
+    <div class="field">
+      <label>預計買進價格（預設為目前股價）</label>
+      <input type="number" id="target-buy-price" placeholder="${fmt(sel.price)}" step="0.01" value="${escapeAttr(d.buyPrice)}" oninput="updateReverseDraft('${sel.symbol}', 'buyPrice', this.value)"/>
+    </div>
+    <div id="reverse-result">${reverseResultHtml(sel.symbol)}</div>
+  `;
+}
+function updateReverseDraft(sym, field, value){
+  state.reverseDraft[field] = value;
+  const box = document.getElementById('reverse-result');
+  if(box) box.innerHTML = reverseResultHtml(sym);
+}
+function reverseResultHtml(sym){
+  const sel = getStock(sym);
+  const h = computeHoldings().holdings[sym] || { shares:0, avgCost:0 };
+  const target = parseFloat(state.reverseDraft.targetAvg);
+  const buyPrice = parseFloat(state.reverseDraft.buyPrice) || (sel ? sel.price : 0);
+  if(!target || h.shares<=0){
+    return h.shares<=0
+      ? `<div class="warn-box">此股票尚無持股紀錄，請先在左側套用一筆加碼</div>`
+      : '';
+  }
+  const needBelowTarget = target < h.avgCost;
+  if(!needBelowTarget){
+    return `<div class="warn-box">目標成本高於目前平均成本（${fmt(h.avgCost)}），不需要攤平</div>`;
+  }
+  if(buyPrice >= target){
+    return `<div class="warn-box">買進價格需低於目標平均成本，才可能攤低均價</div>`;
+  }
+  const neededShares = h.shares * (h.avgCost - target) / (target - buyPrice);
+  const capital = neededShares * buyPrice;
+  return `
+    <div class="result-line"><span class="rl-label">需加碼股數</span><span class="rl-val">約 ${fmt(neededShares,0)} 股</span></div>
+    <div class="result-line"><span class="rl-label">預估所需資金</span><span class="rl-val">約 ${fmt(capital,0)} 元</span></div>
+    <div class="ok-box">以 ${fmt(buyPrice)} 買進約 ${fmt(neededShares,0)} 股，平均成本可降至 ${fmt(target)}</div>
+  `;
+}
+
+function renderNewsTab(sel){
+  const items = NEWS_BANK[sel.symbol] || [];
+  if(!items.length){ return `<div class="panel-section"><div class="empty">目前尚無此股票的相關消息</div></div>`; }
+  const tagLabel = { bull:'利多', bear:'利空', neutral:'中性' };
+  return `
+    <div class="panel-section">
+      <h3>${sel.name} 相關消息</h3>
+      <div class="card">
+        ${items.map(n=>`
+          <div class="news-item">
+            <span class="tag ${n.tag}">${tagLabel[n.tag]}</span>
+            <div class="news-body">
+              <div class="news-title">${n.title}</div>
+              <div class="news-meta">${n.src}・${n.time}</div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderAlertsTab(sel){
+  const relevant = state.alerts;
+  const typeLabel = { target:'目標價', stop:'停損價' };
+  const rows = relevant.map(a=>{
+    const stock = getStock(a.symbol);
+    const hit = stock ? (a.type==='target' ? stock.price >= a.price : stock.price <= a.price) : false;
+    return `
+      <div class="alert-row">
+        <div class="alert-left">
+          <span class="alert-type ${hit?'hit':''}">${hit?'已觸價':typeLabel[a.type]}</span>
+          <span>${stock ? stock.name : a.symbol}</span>
+          <span class="mono" style="color:var(--text-faint)">${typeLabel[a.type]} ${fmt(a.price)}</span>
+        </div>
+        <button class="alert-del" onclick="removeAlert(${a.id})">✕</button>
+      </div>`;
+  }).join('');
+
+  const options = state.stocks.map(s=>`<option value="${s.symbol}" ${s.symbol===(state.alertDraft.symbol||sel.symbol)?'selected':''}>${s.name}</option>`).join('');
+  const d = state.alertDraft;
+
+  return `
+    <div class="panel-section">
+      <h3>價格警示</h3>
+      <p class="panel-hint">股價觸及目標價或停損價時會標示為「已觸價」；若已在右上角啟用瀏覽器通知，觸價當下也會跳出系統通知，就算分頁在背景也看得到。</p>
+      <div class="card">
+        ${rows || `<div class="empty">尚未設定任何警示</div>`}
+        <div class="field-grid">
+          <div>
+            <label>股票</label>
+            <select id="alert-symbol" onchange="updateAlertDraft('symbol', this.value)">${options}</select>
+          </div>
+          <div>
+            <label>類型</label>
+            <select id="alert-type" onchange="updateAlertDraft('type', this.value)">
+              <option value="target" ${d.type==='target'?'selected':''}>目標價</option>
+              <option value="stop" ${d.type==='stop'?'selected':''}>停損價</option>
+            </select>
+          </div>
+          <div>
+            <label>價格</label>
+            <input type="number" id="alert-price" placeholder="價格" step="0.01" value="${escapeAttr(d.price)}" oninput="updateAlertDraft('price', this.value)"/>
+          </div>
+        </div>
+        <button class="btn" style="margin-top:12px;" onclick="addAlert()">新增</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderTransactionsTab(sel){
+  const { realizedById } = computeHoldings();
+  const txs = [...state.transactions].sort((a,b)=> b.date.localeCompare(a.date) || b.id-a.id);
+  const typeLabel = { buy:'買進', sell:'賣出' };
+  const rows = txs.map(t=>{
+    const s = getStock(t.symbol);
+    const amount = t.shares*t.price;
+    const realizedCell = t.type==='sell'
+      ? (()=>{ const r = realizedById[t.id]; return r===undefined ? '－' : `<span class="${r>=0?'up-color':'down-color'}">${r>=0?'+':''}${fmt(r,0)}</span>`; })()
+      : '－';
+    return `<tr>
+      <td>${t.date}</td>
+      <td>${s ? s.name : t.symbol} <span class="mono" style="color:var(--text-faint)">${t.symbol}</span></td>
+      <td><span class="tag ${t.type==='buy'?'bull':'bear'}">${typeLabel[t.type]}</span>${t.imported?' <span class="tag neutral" title="由「持股總覽」匯入的期初持股，不重複計算手續費">期初匯入</span>':''}</td>
+      <td>${fmt(t.shares,0)}</td>
+      <td>${fmt(t.price)}</td>
+      <td>${fmt(amount,0)}</td>
+      <td>${realizedCell}</td>
+      <td><button class="alert-del" onclick="removeTransaction(${t.id})">✕</button></td>
+    </tr>`;
+  }).join('');
+
+  const fee = state.feeSettings;
+  const draft = state.txDraft;
+
+  return `
+    <div class="panel-section">
+      <h3>雲端同步</h3>
+      <p class="panel-hint">貼上 Google Apps Script 部署後的網址，資料會加密推一份到你自己的 Google 試算表；換電腦、換瀏覽器時，登入畫面貼上同一組帳號密碼＋同一個網址即可取回。留空就只存在這台瀏覽器。<br/>本機每次修改都會馬上存檔，但雲端最多<b>每小時自動同步一次</b>（另外會在關閉分頁前補推一次），避免浪費 Apps Script 的使用額度；想立刻同步可以按「立即同步」。</p>
+      <div class="card">
+        <div class="field-grid" style="grid-template-columns: 1fr;">
+          <div>
+            <label>Apps Script 網址</label>
+            <input type="text" id="sync-url-setting" value="${escapeAttr(state.sync.url)}" placeholder="https://script.google.com/macros/s/.../exec" oninput="updateSyncUrlSetting(this.value)"/>
+          </div>
+        </div>
+        <button class="btn" style="margin-top:12px;" onclick="manualSyncNow()">立即同步</button>
+        ${state.sync.url ? `<p class="panel-hint" style="margin:10px 0 0;">狀態：${state.sync.status==='syncing'?'同步中…':state.sync.status==='ok'?'已同步':state.sync.status==='error'?('失敗－'+escapeAttr(state.sync.error||'')):'尚未同步'}${state.sync.lastSyncAt?'（最後一次：'+new Date(state.sync.lastSyncAt).toLocaleString('zh-TW')+'）':''}</p>` : ''}
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <h3>買賣交易紀錄</h3>
+      <p class="panel-hint">股票可直接輸入代號或名稱；成交總金額會依股數×成交價自動帶出，如果跟實際扣款金額有落差，也可以直接改總金額，系統會自動回推每股成交價</p>
+      <div class="card" style="padding:0; overflow-x:auto;">
+        <table>
+          <thead><tr><th>日期</th><th>股票</th><th>類型</th><th>股數</th><th>成交價</th><th>金額</th><th>已實現損益</th><th></th></tr></thead>
+          <tbody>${rows || `<tr><td colspan="8" style="text-align:center; font-family:'Noto Sans TC',sans-serif; color:var(--text-faint); padding:16px 0;">尚無交易紀錄</td></tr>`}</tbody>
+        </table>
+      </div>
+      <div class="card" style="margin-top:12px;">
+        <div class="field-grid">
+          <div>
+            <label>日期</label>
+            <input type="date" id="tx-date" value="${draft.date}" onchange="updateTxDraft('date', this.value)"/>
+          </div>
+          <div>
+            <label>股票（代號或名稱）</label>
+            <input type="text" id="tx-symbol" value="${escapeAttr(draft.symbolInput)}" placeholder="例如 2330 或 台積電" oninput="updateTxDraft('symbolInput', this.value)"/>
+          </div>
+          <div>
+            <label>類型</label>
+            <select id="tx-type" onchange="handleTxTypeChange(this.value)">
+              <option value="buy" ${draft.type==='buy'?'selected':''}>買進</option>
+              <option value="sell" ${draft.type==='sell'?'selected':''}>賣出</option>
+            </select>
+          </div>
+          <div>
+            <label>股數</label>
+            <input type="number" id="tx-shares" placeholder="股數" min="0" value="${escapeAttr(draft.shares)}" oninput="updateTxDraft('shares', this.value)"/>
+          </div>
+          <div>
+            <label>成交價</label>
+            <input type="number" id="tx-price" placeholder="每股價格" min="0" step="0.01" value="${escapeAttr(draft.price)}" oninput="updateTxDraft('price', this.value)"/>
+          </div>
+          <div>
+            <label>成交總金額</label>
+            <input type="number" id="tx-amount" placeholder="自動帶出，可修改" min="0" step="0.01" value="${escapeAttr(draft.amount)}" oninput="updateTxAmount(this.value)"/>
+          </div>
+          <div id="tx-realized-field" style="display:${draft.type==='sell'?'block':'none'};">
+            <label>已實現損益（選填）</label>
+            <input type="number" id="tx-realized" placeholder="留空自動試算" step="0.01" value="${escapeAttr(draft.realized)}" oninput="updateTxDraft('realized', this.value)"/>
+          </div>
+        </div>
+        <button class="btn" style="margin-top:12px;" onclick="addTransaction()">新增紀錄</button>
+      </div>
+    </div>
+
+    <div class="panel-section">
+      <div class="collapsible-head" onclick="toggleFeeSettings()">
+        <h3 style="margin:0;">手續費與證交稅設定</h3>
+        <span class="collapsible-arrow">${state.feeSettingsCollapsed ? '▸' : '▾'}</span>
+      </div>
+      ${state.feeSettingsCollapsed ? `
+        <p class="panel-hint" style="cursor:pointer;" onclick="toggleFeeSettings()">目前：買進 ${(fee.buyFeeRate*100).toFixed(4)}%／賣出 ${(fee.sellFeeRate*100).toFixed(4)}%／最低 ${fmt(fee.minFee,0)} 元／證交稅 ${(fee.taxRate*100).toFixed(4)}%（點這裡展開調整）</p>
+      ` : `
+        <p class="panel-hint">用來自動試算未實現損益，以及賣出交易未手動輸入金額時的預設試算值。可依實際券商費率調整（證交稅：股票 0.3%、ETF 0.1%）</p>
+        <div class="card">
+          <div class="grid-2">
+            <div class="field"><label>買進手續費率 (%)</label><input type="number" id="fee-buy" value="${(fee.buyFeeRate*100).toFixed(4)}" step="0.0001" min="0" onchange="updateFeeSettings()"/></div>
+            <div class="field"><label>賣出手續費率 (%)</label><input type="number" id="fee-sell" value="${(fee.sellFeeRate*100).toFixed(4)}" step="0.0001" min="0" onchange="updateFeeSettings()"/></div>
+            <div class="field"><label>最低手續費（元）</label><input type="number" id="fee-min" value="${fee.minFee}" step="1" min="0" onchange="updateFeeSettings()"/></div>
+            <div class="field"><label>證交稅率 (%)</label><input type="number" id="fee-tax" value="${(fee.taxRate*100).toFixed(4)}" step="0.0001" min="0" onchange="updateFeeSettings()"/></div>
+          </div>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function renderSheetImportSection(){
+  const si = state.sheetImport;
+  const rows = si.rows;
+  const validCount = rows.filter(r=>!r.errorMsg).length;
+  const includedCount = rows.filter(r=>r.include && !r.errorMsg).length;
+
+  const rowsHtml = rows.map((r,idx)=>{
+    const s = r.symbol ? getStock(r.symbol) : null;
+    return `<tr style="${r.errorMsg?'opacity:0.55;':''}">
+      <td>${r.rowIndex}</td>
+      <td>${r.errorMsg?'':`<input type="checkbox" ${r.include?'checked':''} onchange="toggleSheetImportRow(${idx})"/>`}</td>
+      <td>${escapeAttr(r.symbolRaw)}${s?` <span class="mono" style="color:var(--text-faint)">(${s.name})</span>`:''}</td>
+      <td>${r.errorMsg?'－':fmt(r.shares,0)}</td>
+      <td>${r.errorMsg?'－':fmt(r.totalCost,0)}</td>
+      <td>${r.errorMsg||r.avgCost==null?'－':fmt(r.avgCost)}</td>
+      <td>${r.date||'－'}</td>
+      <td>${r.errorMsg?`<span class="down-color">${r.errorMsg}</span>`:'<span class="up-color">可匯入</span>'}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div class="card">
+      <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 4px;">方法一：從 Google 試算表自動匯入</h3>
+      <p class="panel-hint" style="margin:0 0 12px;">
+        試算表需先設定「共用」→「知道連結的任何人」可檢視；第一列請放欄位標題，系統會自動比對這些欄位（不限順序、可中英文）：<b>代號</b>（股票代號或名稱）、<b>股數</b>、<b>總成本</b>（這檔股票總共花了多少錢買進，不是每股平均成本）、<b>日期</b>（選填，起始持有日期）。
+        每次按「重新整理」都會用試算表最新內容，取代同一檔股票先前透過此功能匯入的資料，所以放心重複抓取，不會疊加成兩倍股數；但不會動到你手動新增的一般買賣交易。
+      </p>
+      <div class="field-grid" style="grid-template-columns: 1fr;">
+        <div>
+          <label>Google 試算表連結</label>
+          <input type="text" id="sheet-import-url" placeholder="https://docs.google.com/spreadsheets/d/..." value="${escapeAttr(si.url)}" oninput="updateSheetImportUrl(this.value)"/>
+        </div>
+      </div>
+      <button class="btn" style="margin-top:10px;" onclick="fetchSheetImport()" ${si.loading?'disabled':''}>${si.loading?'讀取中…':'重新整理'}</button>
+      ${si.error ? `<div class="warn-box" style="margin-top:10px;">${escapeAttr(si.error)}</div>` : ''}
+      ${si.fetchedAt && !si.error ? `<div class="panel-hint" style="margin:8px 0 0;">最後讀取時間：${new Date(si.fetchedAt).toLocaleString('zh-TW')}，共解析到 ${rows.length} 列，其中 ${validCount} 列格式正確</div>` : ''}
+      ${rows.length ? `
+        <div class="card" style="padding:0; overflow-x:auto; margin-top:12px;">
+          <table>
+            <thead><tr><th>列</th><th>匯入</th><th>股票</th><th>股數</th><th>總成本</th><th>換算均價</th><th>日期</th><th>狀態</th></tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+        <button class="btn" style="margin-top:10px;" onclick="confirmSheetImport()" ${includedCount?'':'disabled'}>確認匯入已勾選的 ${includedCount} 筆</button>
+      ` : ''}
+    </div>
+  `;
+}
+
+function renderImportHoldingsSection(){
+  const d = state.importDraft;
+  return `
+    <div class="panel-section">
+      <h3>匯入既有持股</h3>
+      <p class="panel-hint">剛開始使用本工具、手上已經有部位時，可以在這裡快速建檔，不用把過去每一筆買賣都補登一次。系統會以填入的股數／持股總成本記一筆「買進」，不會再另外計算買進手續費（因為你填的總成本通常已經是實際花費），畫面上會標示「期初匯入」以便和之後的正常交易區分（之後仍可到「交易紀錄」頁籤刪除或修改）</p>
+
+      ${renderSheetImportSection()}
+
+      <div class="card" style="margin-top:12px;">
+        <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 4px;">方法三：把儀表板上的持股覆寫回這份試算表</h3>
+        <p class="panel-hint" style="margin:0 0 10px;">
+          需要先在「交易紀錄」頁籤設定好「雲端同步」的 Apps Script 網址，且該網址要更新到支援 writeHoldings 的版本（見下方說明）。按下去會把目前所有持股整批寫入試算表的「holdings」分頁，直接取代原本內容。
+        </p>
+        <button class="btn" onclick="pushHoldingsToSheet()" ${state.sheetWriteback.status==='syncing'?'disabled':''}>${state.sheetWriteback.status==='syncing'?'寫入中…':'覆寫回 Google 試算表'}</button>
+        ${state.sheetWriteback.status==='ok' ? `<p class="panel-hint up-color" style="margin-top:8px;">已於 ${new Date(state.sheetWriteback.lastAt).toLocaleString('zh-TW')} 寫入成功</p>` : ''}
+        ${state.sheetWriteback.status==='error' ? `<div class="warn-box" style="margin-top:8px;">寫入失敗：${escapeAttr(state.sheetWriteback.error)}</div>` : ''}
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 8px;">方法二：手動逐筆輸入</h3>
+        <div class="field-grid">
+          <div>
+            <label>起始持有日期（選填）</label>
+            <input type="date" id="import-date" value="${escapeAttr(d.date)}" onchange="updateImportDraft('date', this.value)"/>
+          </div>
+          <div>
+            <label>股票（代號或名稱）</label>
+            <input type="text" id="import-symbol" placeholder="例如 2330 或 台積電" value="${escapeAttr(d.symbolInput)}" oninput="updateImportDraft('symbolInput', this.value)"/>
+          </div>
+          <div>
+            <label>目前股數</label>
+            <input type="number" id="import-shares" placeholder="股數" min="0" value="${escapeAttr(d.shares)}" oninput="updateImportDraft('shares', this.value)"/>
+          </div>
+          <div>
+            <label>持股總成本</label>
+            <input type="number" id="import-cost" placeholder="例如 455000" min="0" step="0.01" value="${escapeAttr(d.cost)}" oninput="updateImportDraft('cost', this.value)"/>
+          </div>
+        </div>
+        <button class="btn" style="margin-top:12px;" onclick="addImportedHolding()">加入持股</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPortfolioTab(){
+  const { holdings: holdingsMap } = computeHoldings();
+  const openSymbols = Object.keys(holdingsMap).filter(sym=>holdingsMap[sym].shares>0);
+  const allRealized = Object.values(holdingsMap).reduce((sum,h)=>sum+h.realizedPL, 0);
+
+  if(!openSymbols.length){
+    return `${renderImportHoldingsSection()}<div class="panel-section"><h3>持股總覽</h3><div class="card">
+      ${allRealized ? `<div class="result-line"><span class="rl-label">已實現損益總計</span><span class="rl-val ${allRealized>=0?'up-color':'down-color'}">${allRealized>=0?'+':''}${fmt(allRealized,0)}</span></div>` : `<div class="empty">尚無持股紀錄，可利用上方「匯入既有持股」快速建檔，或至「交易紀錄」頁籤新增買進紀錄</div>`}
+    </div></div>`;
+  }
+  let totalCost=0, totalNetValue=0, totalGrossValue=0;
+  const rows = openSymbols.map(sym=>{
+    const h = holdingsMap[sym];
+    const s = getStock(sym);
+    const price = s ? s.price : h.avgCost;
+    const name = s ? s.name : sym;
+    const u = computeUnrealized(h, price);
+    const days = holdingDays(sym);
+    totalCost += u.costBasis; totalNetValue += u.netValue; totalGrossValue += u.grossValue;
+    return `<tr>
+      <td>${name} <span class="mono" style="color:var(--text-faint)">${sym}</span></td>
+      <td>${fmt(h.shares,0)}</td>
+      <td>${fmt(h.avgCost)}</td>
+      <td>${fmt(u.costBasis,0)}</td>
+      <td>${fmt(price)}</td>
+      <td>${fmt(u.grossValue,0)}</td>
+      <td class="${u.unrealized>=0?'up-color':'down-color'}">${u.unrealized>=0?'+':''}${fmt(u.unrealized,0)}（${u.unrealizedPct>=0?'+':''}${fmt(u.unrealizedPct)}%）</td>
+      <td>${days===null?'－':fmt(days,0)+' 天'}</td>
+    </tr>`;
+  }).join('');
+  const totalPl = totalNetValue-totalCost;
+  const totalPlPct = totalCost>0 ? (totalPl/totalCost*100) : 0;
+
+  return `
+    ${renderImportHoldingsSection()}
+    <div class="panel-section">
+      <h3>持股總覽</h3>
+      <p class="panel-hint">持股成本＝股數×平均成本（已內含買進手續費，若為「期初匯入」則為你輸入的總成本）；未實現損益已另外扣除試算的賣出手續費與證交稅（費率可於「交易紀錄」頁籤調整）；持有天數以該股最早一筆交易紀錄起算</p>
+      <div class="card" style="padding:0; overflow-x:auto;">
+        <table>
+          <thead><tr><th>股票</th><th>股數</th><th>均價</th><th>持股成本</th><th>現價</th><th>市值</th><th>未實現損益</th><th>持有天數</th></tr></thead>
+          <tbody>${rows}</tbody>
+          <tfoot><tr>
+            <td>合計</td><td></td><td></td>
+            <td>${fmt(totalCost,0)}</td>
+            <td></td>
+            <td>${fmt(totalGrossValue,0)}</td>
+            <td class="${totalPl>=0?'up-color':'down-color'}">${totalPl>=0?'+':''}${fmt(totalPl,0)}（${totalPlPct>=0?'+':''}${fmt(totalPlPct)}%）</td>
+            <td></td>
+          </tr></tfoot>
+        </table>
+      </div>
+      ${allRealized ? `<div class="card" style="margin-top:12px;"><div class="result-line"><span class="rl-label">已實現損益總計（含已平倉部位）</span><span class="rl-val ${allRealized>=0?'up-color':'down-color'}">${allRealized>=0?'+':''}${fmt(allRealized,0)}</span></div></div>` : ''}
+    </div>
+  `;
+}
+
+/* ================= 匯入過去損益紀錄（依年度、區分交易損益／配息） ================= */
+function updatePlImportDraft(field, value){ state.plImportDraft[field] = value; }
+function addImportedPL(){
+  const d = state.plImportDraft;
+  const year = parseInt(d.year, 10) || new Date().getFullYear();
+  if(!year){ alert('請輸入年度'); return; }
+  const category = d.category;
+  const amount = parseFloat(d.amount);
+  if(Number.isNaN(amount)){ alert('請輸入金額（虧損請輸入負數）'); return; }
+  const note = (d.note || '').trim();
+  state.importedPL.push({ id: state.nextImportedPLId++, year, category, amount, note });
+  state.plImportDraft.amount = '';
+  state.plImportDraft.note = '';
+  render();
+}
+function removeImportedPL(id){
+  state.importedPL = state.importedPL.filter(p=>p.id!==id);
+  render();
+}
+
+/* ================= 已實現損益統計（依交易紀錄＋匯入資料，年度／月份加總，區分交易損益與配息） ================= */
+function renderPLSummaryTab(){
+  const { realizedById } = computeHoldings();
+  const sellTxs = state.transactions.filter(t=>t.type==='sell');
+  const byMonth = {};
+  const tradeByYear = {};
+  sellTxs.forEach(t=>{
+    const r = realizedById[t.id];
+    if(r===undefined) return;
+    const ym = t.date.slice(0,7);
+    const y = t.date.slice(0,4);
+    byMonth[ym] = (byMonth[ym]||0) + r;
+    tradeByYear[y] = (tradeByYear[y]||0) + r;
+  });
+
+  // 手動匯入的過去損益，依年度與類別（交易損益／配息）加總
+  const importedTradeByYear = {};
+  const importedDividendByYear = {};
+  state.importedPL.forEach(p=>{
+    const y = String(p.year);
+    if(p.category==='dividend'){ importedDividendByYear[y] = (importedDividendByYear[y]||0) + p.amount; }
+    else{ importedTradeByYear[y] = (importedTradeByYear[y]||0) + p.amount; }
+  });
+
+  // 「配息」頁籤已抓取到的現金股利資料，依年度加總（尚未抓取過的年度不會出現在這裡）
+  const symbols = Array.from(new Set(state.transactions.map(t=>t.symbol)));
+  const dividendYearsFromCache = new Set();
+  symbols.forEach(sym=>{
+    const c = state.dividendCache[sym];
+    if(c && c.records){
+      c.records.forEach(r=>{ if(r.CashExDividendTradingDate) dividendYearsFromCache.add(r.CashExDividendTradingDate.slice(0,4)); });
+    }
+  });
+  const autoDividendByYear = {};
+  dividendYearsFromCache.forEach(y=>{
+    let sum = 0;
+    symbols.forEach(sym=>{
+      computeDividendEvents(sym, parseInt(y,10)).forEach(ev=>{ if(ev.type==='cash') sum += ev.amount; });
+    });
+    if(sum) autoDividendByYear[y] = sum;
+  });
+
+  const years = Array.from(new Set([
+    ...Object.keys(tradeByYear),
+    ...Object.keys(importedTradeByYear),
+    ...Object.keys(importedDividendByYear),
+    ...Object.keys(autoDividendByYear),
+  ])).sort().reverse();
+
+  const months = Object.keys(byMonth).sort().reverse();
+  const yearNow = new Date().getFullYear();
+
+  const importedRows = [...state.importedPL].sort((a,b)=> b.year-a.year || b.id-a.id).map(p=>`
+    <tr>
+      <td>${p.year}</td>
+      <td><span class="tag ${p.category==='dividend'?'neutral':'bull'}">${p.category==='dividend'?'配息':'交易損益'}</span></td>
+      <td class="${p.amount>=0?'up-color':'down-color'}">${p.amount>=0?'+':''}${fmt(p.amount,0)}</td>
+      <td style="color:var(--text-faint)">${p.note?escapeAttr(p.note):'－'}</td>
+      <td><button class="alert-del" onclick="removeImportedPL(${p.id})">✕</button></td>
+    </tr>`).join('');
+
+  const pd = state.plImportDraft;
+  const importSection = `
+    <div class="panel-section">
+      <h3>匯入過去損益紀錄</h3>
+      <p class="panel-hint">開始使用本工具前的歷史損益，可依年度手動補登在這裡，並註明是「交易損益」還是「配息」的錢；補登的資料會併入下方的年度統計一起計算</p>
+      <div class="card">
+        <div class="field-grid">
+          <div>
+            <label>年度</label>
+            <input type="number" id="pl-import-year" value="${escapeAttr(pd.year || yearNow)}" min="1990" max="${yearNow}" oninput="updatePlImportDraft('year', this.value)"/>
+          </div>
+          <div>
+            <label>類別</label>
+            <select id="pl-import-category" onchange="updatePlImportDraft('category', this.value)">
+              <option value="trade" ${pd.category==='trade'?'selected':''}>交易損益</option>
+              <option value="dividend" ${pd.category==='dividend'?'selected':''}>配息</option>
+            </select>
+          </div>
+          <div>
+            <label>金額（虧損請輸入負數）</label>
+            <input type="number" id="pl-import-amount" placeholder="例如 -5000" step="0.01" value="${escapeAttr(pd.amount)}" oninput="updatePlImportDraft('amount', this.value)"/>
+          </div>
+          <div>
+            <label>備註（選填）</label>
+            <input type="text" id="pl-import-note" placeholder="例如：舊券商 2023 年度" value="${escapeAttr(pd.note)}" oninput="updatePlImportDraft('note', this.value)"/>
+          </div>
+        </div>
+        <button class="btn" style="margin-top:12px;" onclick="addImportedPL()">加入</button>
+      </div>
+      ${state.importedPL.length ? `
+      <div class="card" style="padding:0; overflow-x:auto; margin-top:12px;">
+        <table>
+          <thead><tr><th>年度</th><th>類別</th><th>金額</th><th>備註</th><th></th></tr></thead>
+          <tbody>${importedRows}</tbody>
+        </table>
+      </div>` : ''}
+    </div>
+  `;
+
+  if(!years.length){
+    return `${importSection}<div class="panel-section"><h3>已實現損益統計</h3><div class="card"><div class="empty">目前還沒有已實現損益紀錄，可以在上方匯入過去的損益，或到「交易紀錄」頁籤新增賣出交易</div></div></div>`;
+  }
+
+  const yearRows = years.map(y=>{
+    const trade = (tradeByYear[y]||0) + (importedTradeByYear[y]||0);
+    const dividend = (importedDividendByYear[y]||0) + (autoDividendByYear[y]||0);
+    const total = trade + dividend;
+    return `<tr>
+      <td>${y}</td>
+      <td class="${trade>=0?'up-color':'down-color'}">${trade>=0?'+':''}${fmt(trade,0)}</td>
+      <td class="${dividend>=0?'up-color':'down-color'}">${dividend>=0?'+':''}${fmt(dividend,0)}</td>
+      <td class="${total>=0?'up-color':'down-color'}">${total>=0?'+':''}${fmt(total,0)}</td>
+    </tr>`;
+  }).join('');
+  const grandTrade = years.reduce((s,y)=> s + (tradeByYear[y]||0) + (importedTradeByYear[y]||0), 0);
+  const grandDividend = years.reduce((s,y)=> s + (importedDividendByYear[y]||0) + (autoDividendByYear[y]||0), 0);
+  const grandTotal = grandTrade + grandDividend;
+
+  const monthRows = months.map(m=>{
+    const v = byMonth[m];
+    return `<tr><td>${m}</td><td class="${v>=0?'up-color':'down-color'}">${v>=0?'+':''}${fmt(v,0)}</td></tr>`;
+  }).join('');
+
+  return `
+    ${importSection}
+    <div class="panel-section">
+      <h3>已實現損益統計（依年度，區分交易損益／配息）</h3>
+      <p class="panel-hint">交易損益＝「交易紀錄」頁籤中賣出交易的已實現損益＋上方手動匯入的交易損益；配息＝上方手動匯入的配息＋「配息」頁籤已抓取到的現金股利（尚未抓取過的年度會顯示為 0，可到「配息」頁籤補抓）</p>
+      <div class="card" style="padding:0; overflow-x:auto;">
+        <table>
+          <thead><tr><th>年度</th><th>交易損益</th><th>配息</th><th>年度合計</th></tr></thead>
+          <tbody>${yearRows}</tbody>
+          <tfoot><tr>
+            <td>總計</td>
+            <td class="${grandTrade>=0?'up-color':'down-color'}">${grandTrade>=0?'+':''}${fmt(grandTrade,0)}</td>
+            <td class="${grandDividend>=0?'up-color':'down-color'}">${grandDividend>=0?'+':''}${fmt(grandDividend,0)}</td>
+            <td class="${grandTotal>=0?'up-color':'down-color'}">${grandTotal>=0?'+':''}${fmt(grandTotal,0)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+    </div>
+    <div class="panel-section">
+      <h3>交易損益（依月份）</h3>
+      <p class="panel-hint">僅計算「交易紀錄」頁籤中賣出交易的已實現損益，不含上方手動匯入的資料（匯入資料只有年度、沒有月份）</p>
+      <div class="card" style="padding:0; overflow-x:auto; max-height:420px; overflow-y:auto;">
+        <table>
+          <thead><tr><th>月份</th><th>已實現損益</th></tr></thead>
+          <tbody>${monthRows || `<tr><td colspan="2" style="text-align:center; color:var(--text-faint); padding:12px 0;">尚無交易紀錄</td></tr>`}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+/* ================= 用 FinMind 查詢股價（新增觀察股時，若不是內建模擬股票池裡的代號就用這個抓） ================= */
+/* ================= 台灣證交所盤中即時報價（mis.twse.com.tw，非官方文件、逆向工程得出）=================
+   這個介面沒有正式文件，也沒有人保證瀏覽器能跨網域直接呼叫成功；一旦失敗就自動退回用 FinMind
+   的最近收盤價（見下方 fetchFinMindPrice），確保至少還看得到合理的資料。 */
+let twsePollTimer = null;
+let twseSourceFailed = false; // 一旦連線失敗就先停止繼續嘗試，改用 FinMind，避免對一個壞掉的來源一直重打
+
+function isTaiwanTradingHoursNow(){
+  const d = new Date();
+  const day = d.getDay(); // 0=週日...6=週六
+  if(day===0 || day===6) return false;
+  const mins = d.getHours()*60 + d.getMinutes();
+  return mins >= 9*60 && mins <= 13*60+35; // 09:00–13:35（含收盤後幾分鐘緩衝）
+}
+async function fetchTWSEQuotesRaw(channels){
+  const url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?json=1&delay=0&_=' + Date.now() + '&ex_ch=' + encodeURIComponent(channels);
+  const resp = await fetch(url);
+  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+function applyTWSEQuote(out, m){
+  const z = parseFloat(m.z); // 最近成交價，可能是 "-"（今天還沒成交過）
+  const y = parseFloat(m.y); // 昨收
+  const price = !Number.isNaN(z) ? z : (!Number.isNaN(y) ? y : null);
+  if(price!=null) out[m.c] = { price, prevClose: !Number.isNaN(y) ? y : price };
+}
+// 先當作全部是上市（tse_）批次查一次，查不到的再當成上櫃（otc_）重試一次，兩種都涵蓋到
+async function fetchTWSEQuotes(symbols){
+  if(!symbols.length) return {};
+  const out = {};
+  const json1 = await fetchTWSEQuotesRaw(symbols.map(s=>'tse_'+s+'.tw').join('|'));
+  const found = new Set();
+  (json1.msgArray||[]).forEach(m=>{ found.add(m.c); applyTWSEQuote(out, m); });
+  const missing = symbols.filter(s=>!found.has(s));
+  if(missing.length){
+    try{
+      const json2 = await fetchTWSEQuotesRaw(missing.map(s=>'otc_'+s+'.tw').join('|'));
+      (json2.msgArray||[]).forEach(m=> applyTWSEQuote(out, m));
+    }catch(e){ /* 上櫃那批查不到就算了，不影響上市的部分 */ }
+  }
+  return out;
+}
+async function pollTWSEPrices(){
+  if(!state.session.loggedIn || twseSourceFailed) return;
+  if(!isTaiwanTradingHoursNow()){ state.twseStatus = 'closed'; return; }
+  try{
+    const symbols = state.stocks.map(s=>s.symbol);
+    const quotes = await fetchTWSEQuotes(symbols);
+    let updated = false;
+    state.stocks.forEach(s=>{
+      const q = quotes[s.symbol];
+      if(q){
+        s.price = q.price;
+        s.prevClose = q.prevClose;
+        s.history.push(q.price);
+        if(s.history.length>30) s.history.shift();
+        updated = true;
+      }
+    });
+    state.twseStatus = 'ok';
+    state.twseError = null;
+    if(updated){
+      state.lastPriceRefreshAt = new Date().toISOString();
+      checkAlertNotifications();
+    }
+    renderUnlessTyping();
+  } catch(err){
+    state.twseStatus = 'error';
+    state.twseError = (err && err.message) || '連線失敗（可能是瀏覽器封鎖跨網域請求，或該介面暫時無法使用）';
+    twseSourceFailed = true; // 先停止繼續嘗試；使用者按「重新整理報價」時會再給它一次機會
+    renderUnlessTyping();
+  }
+}
+function startTWSEPolling(){
+  if(twsePollTimer) clearInterval(twsePollTimer);
+  twsePollTimer = setInterval(pollTWSEPrices, 5000);
+  pollTWSEPrices(); // 立刻先打一次，不用乾等 5 秒
+}
+// 手動按「重新整理報價」：重新給 TWSE 一次機會；如果還是失敗，退回用 FinMind 的最近收盤價
+async function manualRefreshPrices(){
+  twseSourceFailed = false;
+  await pollTWSEPrices();
+  if(state.twseStatus === 'error' || state.twseStatus === 'closed'){
+    // TWSE 沒有更新到資料（失敗，或現在非交易時段），退回抓 FinMind 的最近收盤價，至少確保資料是最新的
+    await refreshAllPrices();
+  }
+}
+
+async function fetchFinMindPrice(symbol){
+  const end = new Date();
+  const start = new Date(end.getTime() - 40*86400000); // 抓近 40 天（約可涵蓋 20+ 個交易日），供股價與走勢圖使用
+  const fmt2 = d => d.toISOString().slice(0,10);
+  const params = new URLSearchParams({ dataset:'TaiwanStockPrice', data_id: symbol, start_date: fmt2(start), end_date: fmt2(end) });
+  const headers = {};
+  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
+  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  const json = await resp.json();
+  if(json && json.status && json.status !== 200 && json.status !== '200'){
+    throw new Error(json.msg || ('狀態碼 ' + json.status));
+  }
+  const rows = (json.data || []).slice().sort((a,b)=> String(a.date).localeCompare(String(b.date)));
+  if(!rows.length) return null;
+  const closes = rows.map(r=> Number(r.close ?? r.Close ?? r.Adj_Close)).filter(v=>v && !Number.isNaN(v));
+  if(!closes.length) return null;
+  const close = closes[closes.length-1];
+  const prevClose = closes.length>1 ? closes[closes.length-2] : close;
+  return { price: close, prevClose, date: rows[rows.length-1].date, series: closes.slice(-20) };
+}
+
+// 用公司名稱查對應的股票代號（FinMind 的股價 API 只認代號，不認中文名稱）。
+// 整份台股清單抓一次後快取起來，避免每次新增觀察股都重新下載。
+let finmindStockInfoCache = null;
+async function lookupFinMindStockId(name){
+  if(!finmindStockInfoCache){
+    const headers = {};
+    if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+    const resp = await fetch('https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo', { headers });
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const json = await resp.json();
+    finmindStockInfoCache = json.data || [];
+  }
+  let hit = finmindStockInfoCache.find(r=> r.stock_name === name);
+  if(!hit) hit = finmindStockInfoCache.find(r=> r.stock_name && r.stock_name.includes(name));
+  return hit ? hit.stock_id : null;
+}
+// 嘗試把使用者輸入解析成 FinMind 認得的股票代號：看起來已經像代號就直接試，抓不到再用名稱查一次
+async function resolveFinMindSymbolAndPrice(rawInput, guessedSymbol){
+  const looksLikeCode = /^[0-9]{2,6}[A-Za-z]{0,2}$/.test(guessedSymbol);
+  if(looksLikeCode){
+    const result = await fetchFinMindPrice(guessedSymbol);
+    if(result) return { finmindId: guessedSymbol, result };
+  }
+  const id = await lookupFinMindStockId(rawInput);
+  if(id){
+    const result = await fetchFinMindPrice(id);
+    if(result) return { finmindId: id, result };
+  }
+  return null;
+}
+
+
+/* ================= 配息（串接 FinMind API） ================= */
+async function fetchDividends(symbol){
+  state.dividendCache[symbol] = { ...(state.dividendCache[symbol]||{}), loading:true, error:null };
+  render();
+  try{
+    const params = new URLSearchParams({ dataset:'TaiwanStockDividend', data_id: symbol, start_date:'2015-01-01' });
+    const headers = {};
+    if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+    const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
+    if(!resp.ok) throw new Error('HTTP ' + resp.status);
+    const json = await resp.json();
+    if(json && json.status && json.status !== 200 && json.status !== '200'){
+      throw new Error(json.msg || ('狀態碼 ' + json.status));
+    }
+    state.dividendCache[symbol] = { loading:false, error:null, records: json.data || [], fetchedAt: new Date().toISOString() };
+  } catch(err){
+    state.dividendCache[symbol] = {
+      loading:false,
+      error: (err && err.message) || '取得資料失敗，可能是網路限制或 FinMind 服務問題',
+      records: (state.dividendCache[symbol] && state.dividendCache[symbol].records) || [],
+      fetchedAt: null,
+    };
+  }
+  render();
+}
+async function fetchAllDividends(){
+  const symbols = Array.from(new Set(state.transactions.map(t=>t.symbol)));
+  for(const sym of symbols){
+    await fetchDividends(sym);
+  }
+}
+function updateFinmindToken(val){ state.finmindToken = val; }
+function updateDividendYear(val){ state.dividendYear = parseInt(val,10) || new Date().getFullYear(); render(); }
+
+// 依除權息日前一日的持股快照，判斷是否符合配息資格，回傳該年度所有符合資格的配息事件
+function computeDividendEvents(symbol, year){
+  const cache = state.dividendCache[symbol];
+  if(!cache || !cache.records) return [];
+  const events = [];
+  cache.records.forEach(r=>{
+    const exDate = r.CashExDividendTradingDate;
+    if(exDate && exDate.slice(0,4) === String(year)){
+      const perShare = (parseFloat(r.CashEarningsDistribution)||0) + (parseFloat(r.CashStatutorySurplus)||0);
+      if(perShare > 0){
+        const shares = holdingsAsOf(symbol, exDate);
+        if(shares > 0) events.push({ symbol, exDate, perShare, shares, amount: perShare*shares, type:'cash' });
+      }
+    }
+    const exDateStock = r.StockExDividendTradingDate;
+    if(exDateStock && exDateStock.slice(0,4) === String(year)){
+      const stockPerShareValue = (parseFloat(r.StockEarningsDistribution)||0) + (parseFloat(r.StockStatutorySurplus)||0);
+      if(stockPerShareValue > 0){
+        const shares = holdingsAsOf(symbol, exDateStock);
+        if(shares > 0){
+          const newShares = shares * (stockPerShareValue/10);
+          events.push({ symbol, exDate: exDateStock, perShare: stockPerShareValue, shares, newShares, type:'stock' });
+        }
+      }
+    }
+  });
+  return events.sort((a,b)=>a.exDate.localeCompare(b.exDate));
+}
+
+function renderDividendTab(){
+  const year = state.dividendYear;
+  const symbols = Array.from(new Set(state.transactions.map(t=>t.symbol)));
+  const curYear = new Date().getFullYear();
+  const yearOptions = [];
+  for(let y=curYear; y>=curYear-5; y--) yearOptions.push(y);
+
+  let totalCash = 0;
+  const eventRows = [];
+  symbols.forEach(sym=>{
+    const events = computeDividendEvents(sym, year);
+    const s = getStock(sym);
+    events.forEach(ev=>{
+      if(ev.type==='cash'){
+        totalCash += ev.amount;
+        eventRows.push(`<tr>
+          <td>${ev.exDate}</td>
+          <td>${s?s.name:sym} <span class="mono" style="color:var(--text-faint)">${sym}</span></td>
+          <td>現金股利</td>
+          <td>${fmt(ev.perShare,4)}</td>
+          <td>${fmt(ev.shares,0)}</td>
+          <td class="up-color">+${fmt(ev.amount,0)}</td>
+        </tr>`);
+      } else {
+        eventRows.push(`<tr>
+          <td>${ev.exDate}</td>
+          <td>${s?s.name:sym} <span class="mono" style="color:var(--text-faint)">${sym}</span></td>
+          <td>股票股利</td>
+          <td>${fmt(ev.perShare,4)}</td>
+          <td>${fmt(ev.shares,0)}</td>
+          <td>另配 ${fmt(ev.newShares,0)} 股</td>
+        </tr>`);
+      }
+    });
+  });
+
+  const cacheStatusRows = symbols.map(sym=>{
+    const c = state.dividendCache[sym];
+    const s = getStock(sym);
+    let statusText, statusClass='';
+    if(!c){ statusText = '尚未抓取'; }
+    else if(c.loading){ statusText = '抓取中…'; }
+    else if(c.error){ statusText = '失敗：' + c.error; statusClass='down-color'; }
+    else { statusText = `已更新（${c.records.length} 筆股利紀錄）`; statusClass='up-color'; }
+    return `<div class="result-line"><span class="rl-label">${s?s.name:sym}（${sym}）</span><span class="rl-val ${statusClass}" style="font-family:'Noto Sans TC',sans-serif; font-weight:400;">${statusText}</span></div>`;
+  }).join('');
+
+  return `
+    <div class="panel-section">
+      <h3>配息設定</h3>
+      <p class="panel-hint">資料來源為 FinMind 開放 API（股利政策表 TaiwanStockDividend），需要瀏覽器連線到外部服務才能抓取，免費額度有限。若常常抓取失敗，可到 FinMind 官網申請免費 API Token 填入下方以提高額度。除了 Token（選填）之外不需要再填其他資料：查詢的股票代號會自動取用「交易紀錄」裡已經登記過的股票，所以請先確保該股票至少有一筆買進紀錄；查詢區間固定從 2015-01-01 起算；若瀏覽器所在的網路環境會擋外部連線，也會抓取失敗</p>
+      <div class="card">
+        <div class="grid-2">
+          <div class="field">
+            <label>統計年度</label>
+            <select id="dividend-year" onchange="updateDividendYear(this.value)">
+              ${yearOptions.map(y=>`<option value="${y}" ${y===year?'selected':''}>${y} 年</option>`).join('')}
+            </select>
+          </div>
+          <div class="field">
+            <label>FinMind API Token（選填）</label>
+            <input type="text" id="finmind-token" value="${escapeAttr(state.finmindToken)}" placeholder="留空使用免費額度" oninput="updateFinmindToken(this.value)"/>
+          </div>
+        </div>
+        <button class="btn" onclick="fetchAllDividends()">重新抓取所有持股的配息資料</button>
+      </div>
+    </div>
+
+    ${symbols.length ? `
+    <div class="panel-section">
+      <h3>資料狀態</h3>
+      <div class="card">${cacheStatusRows}</div>
+    </div>` : `<div class="panel-section"><div class="card"><div class="empty">請先到「交易紀錄」頁籤新增買進紀錄</div></div></div>`}
+
+    <div class="panel-section">
+      <h3>${year} 年度配息總覽</h3>
+      <p class="panel-hint">依除息日前的實際持有股數自動比對配息資格；股票股利僅列出可另外取得的股數，不計入現金總額</p>
+      <div class="card">
+        <div class="result-line"><span class="rl-label">現金股利加總</span><span class="rl-val up-color">+${fmt(totalCash,0)}</span></div>
+      </div>
+      ${eventRows.length ? `
+      <div class="card" style="padding:0; overflow-x:auto; margin-top:12px;">
+        <table>
+          <thead><tr><th>除權息日</th><th>股票</th><th>類型</th><th>每股股利</th><th>當時持有股數</th><th>金額／配股</th></tr></thead>
+          <tbody>${eventRows.join('')}</tbody>
+        </table>
+      </div>` : `<div class="empty" style="margin-top:8px;">目前沒有符合資格的配息紀錄，請先抓取配息資料，或確認持有期間是否涵蓋除權息日</div>`}
+    </div>
+  `;
+}
+
+// 頁面載入時，先把這台裝置記得的雲端同步網址帶入登入畫面，方便不用每次重貼
+try{
+  const savedSyncUrl = localStorage.getItem(SYNC_URL_KEY);
+  if(savedSyncUrl) state.loginDraft.syncUrl = savedSyncUrl;
+}catch(e){ /* 忽略 */ }
+
+render();
+
+</script>
+</body>
+</html>
