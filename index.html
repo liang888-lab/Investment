@@ -274,7 +274,6 @@
 <body>
 <div class="app" id="app"></div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.4.1/papaparse.min.js"></script>
 <script>
 /* ================= 資料模型 ================= */
 const STOCK_POOL = [
@@ -848,6 +847,37 @@ const SHEET_HEADER_ALIASES = {
   totalCost: ['總成本','持股總成本','總金額','成本總額','總持股成本','total cost','totalcost','cost'],
   date: ['日期','起始日期','持有日期','買進日期','date'],
 };
+// 簡易 CSV 解析器（自己寫的，不依賴外部函式庫，避免外部 CDN 載入失敗導致整個功能壞掉）
+// 支援標準逗號分隔、雙引號欄位（含欄位內逗號、換行、跳脫雙引號 ""），第一列當標題
+function parseCSV(text){
+  const rows = [];
+  let row = [], field = '', inQuotes = false;
+  for(let i=0;i<text.length;i++){
+    const c = text[i];
+    if(inQuotes){
+      if(c === '"'){
+        if(text[i+1] === '"'){ field += '"'; i++; }
+        else { inQuotes = false; }
+      } else { field += c; }
+    } else if(c === '"'){ inQuotes = true; }
+    else if(c === ','){ row.push(field); field = ''; }
+    else if(c === '\r'){ /* 忽略，換行由 \n 處理 */ }
+    else if(c === '\n'){ row.push(field); rows.push(row); row = []; field = ''; }
+    else { field += c; }
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  while(rows.length && rows[rows.length-1].length===1 && rows[rows.length-1][0]===''){ rows.pop(); }
+  if(!rows.length) return [];
+  const headers = rows[0];
+  return rows.slice(1)
+    .filter(r => r.length>1 || (r[0]||'').trim()!=='')
+    .map(r=>{
+      const obj = {};
+      headers.forEach((h,idx)=>{ obj[h] = r[idx]!==undefined ? r[idx] : ''; });
+      return obj;
+    });
+}
+
 function buildSheetCsvUrl(rawUrl){
   const url = (rawUrl||'').trim();
   if(!url) return null;
@@ -916,8 +946,8 @@ async function fetchSheetImport(){
     const resp = await fetch(csvUrl);
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const text = await resp.text();
-    const parsed = Papa.parse(text.trim(), { header:true, skipEmptyLines:true });
-    state.sheetImport.rows = mapSheetRows(parsed.data);
+    const parsedRows = parseCSV(text.trim());
+    state.sheetImport.rows = mapSheetRows(parsedRows);
     state.sheetImport.fetchedAt = new Date().toISOString();
     if(!state.sheetImport.rows.length){
       state.sheetImport.error = '有連上試算表，但沒有解析到任何資料列，請確認第一列是欄位標題（例如：代號、股數、總成本）';
