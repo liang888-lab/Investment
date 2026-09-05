@@ -374,6 +374,8 @@ const state = {
   portfolioAccountFilter: '全部',       // 持股總覽的帳戶篩選頁籤，'全部' 代表不分帳戶合併顯示
   txExpandedSymbol: null,               // 交易紀錄頁籤裡，目前展開中的股票代號（一次只展開一檔）
   reconciling: false,                   // 「整理重複股票代號」執行中的狀態
+  txListCollapsed: true,                // 買賣交易紀錄清單預設收合，輸入表單優先顯示在最上面
+  txFormCollapsed: true,                // 新增交易的輸入表單，預設也收合，點開才顯示
   feeSettings: {
     buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%（個股與 ETF 手續費率通常相同，不分開設定）
     sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
@@ -490,6 +492,8 @@ function computeUnrealized(h, currentPrice, symbol){
 
 function toggleFeeSettings(){ state.feeSettingsCollapsed = !state.feeSettingsCollapsed; render(); }
 function toggleTxSymbolGroup(sym){ state.txExpandedSymbol = (state.txExpandedSymbol === sym) ? null : sym; render(); }
+function toggleTxList(){ state.txListCollapsed = !state.txListCollapsed; render(); }
+function toggleTxForm(){ state.txFormCollapsed = !state.txFormCollapsed; render(); }
 function togglePlMonthlyView(){ state.plMonthlyCollapsed = !state.plMonthlyCollapsed; render(); }
 function togglePlYear(y){ state.plExpandedYear = (state.plExpandedYear === y) ? null : y; render(); }
 function togglePlImportedList(){ state.plImportedListCollapsed = !state.plImportedListCollapsed; render(); }
@@ -520,6 +524,23 @@ function resolveSymbolInput(raw){
   match = STOCK_POOL.find(s=> s.name.includes(q) || q.includes(s.name));
   if(match) return match.symbol;
   return q; // 找不到就當成自訂代號，允許追蹤清單以外的股票
+}
+// 輸入代號或名稱時即時顯示對應的另一邊（代號↔名稱），方便在送出前就確認打對股票，不用等送出後才發現輸錯。
+// 全部只查本機已有的資料（內建股票池、已追蹤股票、之前查過的 FinMind 名稱清單），不會另外發出網路請求，
+// 所以打字時不會卡頓；如果本機都查不到，只會顯示中性提示，不代表輸入有誤，送出時才會嘗試線上查詢。
+function previewSymbolMatch(raw){
+  const q = (raw||'').trim();
+  if(!q) return '';
+  const guess = resolveSymbolInput(q);
+  const tracked = getStock(guess);
+  if(tracked) return `<span class="up-color">→ ${escapeAttr(tracked.name)}（${escapeAttr(tracked.symbol)}）</span>`;
+  if(finmindStockInfoCache){
+    let hit = finmindStockInfoCache.find(r=>r.stock_id===q);
+    if(!hit) hit = finmindStockInfoCache.find(r=>r.stock_name===q);
+    if(!hit) hit = finmindStockInfoCache.find(r=>r.stock_name && r.stock_name.includes(q));
+    if(hit) return `<span class="up-color">→ ${escapeAttr(hit.stock_name)}（${escapeAttr(hit.stock_id)}）</span>`;
+  }
+  return `<span style="color:var(--text-faint);">尚未確認對應股票，送出時會自動查詢比對</span>`;
 }
 function ensureStockTracked(symbol, customName, customPrice, customPrevClose, customSeries){
   if(getStock(symbol)) return true;
@@ -817,6 +838,10 @@ function goToTransactionWithDraft(symbol, shares, price){
 /* ================= 買賣交易區：受控表單狀態（避免每 3 秒的自動報價重畫把輸入內容洗掉） ================= */
 function updateTxDraft(field, value){
   state.txDraft[field] = value;
+  if(field==='symbolInput'){
+    const preview = document.getElementById('tx-symbol-preview');
+    if(preview) preview.innerHTML = previewSymbolMatch(value);
+  }
   if((field==='shares' || field==='price') && !state.txDraft.amountEdited){
     const shares = parseFloat(state.txDraft.shares);
     const price = parseFloat(state.txDraft.price);
@@ -1226,7 +1251,13 @@ function clearHoldingForSymbol(symbol){
 /* ================= 匯入既有持股（開始使用本工具前已持有的部位） ================= */
 // 以一筆「買進」交易記錄匯入，並標記 skipFee（因為填入的總成本已經是實際花費，不再另外計算買進手續費）
 // 與 imported（純粹用於畫面上標示「期初匯入」，不影響任何計算邏輯）
-function updateImportDraft(field, value){ state.importDraft[field] = value; }
+function updateImportDraft(field, value){
+  state.importDraft[field] = value;
+  if(field==='symbolInput'){
+    const preview = document.getElementById('import-symbol-preview');
+    if(preview) preview.innerHTML = previewSymbolMatch(value);
+  }
+}
 async function addImportedHolding(){
   const d = state.importDraft;
   let symbol = resolveSymbolInput(d.symbolInput);
@@ -1670,6 +1701,7 @@ function attemptLogin(){
     render();
   }
   refreshAllPrices().then(startTWSEPolling); // 先用 FinMind 抓到最近收盤價當底，完成後才開始 TWSE 輪詢，避免兩邊資料互相蓋過去
+  ensureFinMindStockInfoCache().catch(()=>{}); // 背景預先載入完整台股清單，讓輸入代號/名稱時的即時比對能涵蓋所有股票，不只內建的 10 檔
 }
 function logout(){
   if(!confirm('登出後需要重新輸入密碼才能取回資料，確定要登出嗎？（資料已經存在這台瀏覽器裡，不會遺失）')) return;
@@ -2045,6 +2077,73 @@ function renderTransactionsTab(sel){
 
   return `
     <div class="panel-section">
+      <div class="collapsible-head" onclick="toggleTxForm()">
+        <h3 style="margin:0;">新增買賣交易</h3>
+        <span class="collapsible-arrow">${state.txFormCollapsed ? '▸' : '▾'}</span>
+      </div>
+      ${state.txFormCollapsed ? `
+        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="toggleTxForm()">點這裡展開，輸入一筆新的買進／賣出紀錄</p>
+      ` : `
+        <p class="panel-hint">股票可直接輸入代號或名稱，下方會即時顯示對應到的另一邊，方便確認打對股票；成交總金額會依股數×成交價自動帶出，如果跟實際扣款金額有落差，也可以直接改總金額，系統會自動回推每股成交價</p>
+        <div class="card">
+          <div class="field-grid">
+            <div>
+              <label>日期</label>
+              <input type="date" id="tx-date" value="${draft.date}" onchange="updateTxDraft('date', this.value)"/>
+            </div>
+            <div>
+              <label>股票（代號或名稱）</label>
+              <input type="text" id="tx-symbol" value="${escapeAttr(draft.symbolInput)}" placeholder="例如 2330 或 台積電" oninput="updateTxDraft('symbolInput', this.value)"/>
+              <div id="tx-symbol-preview" style="font-size:11px; margin-top:3px; min-height:14px;">${previewSymbolMatch(draft.symbolInput)}</div>
+            </div>
+            <div>
+              <label>帳戶（選填）</label>
+              <input type="text" id="tx-account" value="${escapeAttr(draft.account)}" placeholder="例如 台新／凱基／國泰" oninput="updateTxDraft('account', this.value)"/>
+            </div>
+            <div>
+              <label>類型</label>
+              <select id="tx-type" onchange="handleTxTypeChange(this.value)">
+                <option value="buy" ${draft.type==='buy'?'selected':''}>買進</option>
+                <option value="sell" ${draft.type==='sell'?'selected':''}>賣出</option>
+              </select>
+            </div>
+            <div>
+              <label>股數</label>
+              <input type="number" id="tx-shares" placeholder="股數" min="0" value="${escapeAttr(draft.shares)}" oninput="updateTxDraft('shares', this.value)"/>
+            </div>
+            <div>
+              <label>成交價</label>
+              <input type="number" id="tx-price" placeholder="每股價格" min="0" step="0.01" value="${escapeAttr(draft.price)}" oninput="updateTxDraft('price', this.value)"/>
+            </div>
+            <div>
+              <label>成交總金額</label>
+              <input type="number" id="tx-amount" placeholder="自動帶出，可修改" min="0" step="0.01" value="${escapeAttr(draft.amount)}" oninput="updateTxAmount(this.value)"/>
+            </div>
+            <div id="tx-realized-field" style="display:${draft.type==='sell'?'block':'none'};">
+              <label>已實現損益（選填）</label>
+              <input type="number" id="tx-realized" placeholder="留空自動試算" step="0.01" value="${escapeAttr(draft.realized)}" oninput="updateTxDraft('realized', this.value)"/>
+            </div>
+          </div>
+          <button class="btn" style="margin-top:12px;" onclick="addTransaction()">新增紀錄</button>
+        </div>
+      `}
+      <div class="collapsible-head" style="margin-top:16px;" onclick="toggleTxList()">
+        <h3 style="margin:0; font-size:13px;">交易清單（共 ${state.transactions.length} 筆）</h3>
+        <span class="collapsible-arrow">${state.txListCollapsed ? '▸' : '▾'}</span>
+      </div>
+      ${state.txListCollapsed ? `
+        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="toggleTxList()">點這裡展開查看依股票分組的完整交易清單</p>
+      ` : `
+        <div class="card" style="padding:0; overflow-x:auto; margin-top:8px;">
+          <table>
+            <thead><tr><th>日期</th><th>類型</th><th>股數</th><th>成交價</th><th>金額</th><th>帳戶</th><th>已實現損益</th><th></th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="8" style="text-align:center; font-family:'Noto Sans TC',sans-serif; color:var(--text-faint); padding:16px 0;">尚無交易紀錄</td></tr>`}</tbody>
+          </table>
+        </div>
+      `}
+    </div>
+
+    <div class="panel-section">
       <h3>雲端同步</h3>
       <p class="panel-hint">貼上 Google Apps Script 部署後的網址，資料會加密推一份到你自己的 Google 試算表；換電腦、換瀏覽器時，登入畫面貼上同一組帳號密碼＋同一個網址即可取回。留空就只存在這台瀏覽器。<br/>本機每次修改都會馬上存檔，但雲端最多<b>每小時自動同步一次</b>（另外會在關閉分頁前補推一次），避免浪費 Apps Script 的使用額度；想立刻同步可以按「立即同步」。</p>
       <div class="card">
@@ -2056,57 +2155,6 @@ function renderTransactionsTab(sel){
         </div>
         <button class="btn" style="margin-top:12px;" onclick="manualSyncNow()">立即同步</button>
         ${state.sync.url ? `<p class="panel-hint" style="margin:10px 0 0;">狀態：${state.sync.status==='syncing'?'同步中…':state.sync.status==='ok'?'已同步':state.sync.status==='error'?('失敗－'+escapeAttr(state.sync.error||'')):'尚未同步'}${state.sync.lastSyncAt?'（最後一次：'+new Date(state.sync.lastSyncAt).toLocaleString('zh-TW')+'）':''}</p>` : ''}
-      </div>
-    </div>
-
-    <div class="panel-section">
-      <h3>買賣交易紀錄</h3>
-      <p class="panel-hint">股票可直接輸入代號或名稱；成交總金額會依股數×成交價自動帶出，如果跟實際扣款金額有落差，也可以直接改總金額，系統會自動回推每股成交價</p>
-      <div class="card" style="padding:0; overflow-x:auto;">
-        <table>
-          <thead><tr><th>日期</th><th>類型</th><th>股數</th><th>成交價</th><th>金額</th><th>帳戶</th><th>已實現損益</th><th></th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="8" style="text-align:center; font-family:'Noto Sans TC',sans-serif; color:var(--text-faint); padding:16px 0;">尚無交易紀錄</td></tr>`}</tbody>
-        </table>
-      </div>
-      <div class="card" style="margin-top:12px;">
-        <div class="field-grid">
-          <div>
-            <label>日期</label>
-            <input type="date" id="tx-date" value="${draft.date}" onchange="updateTxDraft('date', this.value)"/>
-          </div>
-          <div>
-            <label>股票（代號或名稱）</label>
-            <input type="text" id="tx-symbol" value="${escapeAttr(draft.symbolInput)}" placeholder="例如 2330 或 台積電" oninput="updateTxDraft('symbolInput', this.value)"/>
-          </div>
-          <div>
-            <label>帳戶（選填）</label>
-            <input type="text" id="tx-account" value="${escapeAttr(draft.account)}" placeholder="例如 台新／凱基／國泰" oninput="updateTxDraft('account', this.value)"/>
-          </div>
-          <div>
-            <label>類型</label>
-            <select id="tx-type" onchange="handleTxTypeChange(this.value)">
-              <option value="buy" ${draft.type==='buy'?'selected':''}>買進</option>
-              <option value="sell" ${draft.type==='sell'?'selected':''}>賣出</option>
-            </select>
-          </div>
-          <div>
-            <label>股數</label>
-            <input type="number" id="tx-shares" placeholder="股數" min="0" value="${escapeAttr(draft.shares)}" oninput="updateTxDraft('shares', this.value)"/>
-          </div>
-          <div>
-            <label>成交價</label>
-            <input type="number" id="tx-price" placeholder="每股價格" min="0" step="0.01" value="${escapeAttr(draft.price)}" oninput="updateTxDraft('price', this.value)"/>
-          </div>
-          <div>
-            <label>成交總金額</label>
-            <input type="number" id="tx-amount" placeholder="自動帶出，可修改" min="0" step="0.01" value="${escapeAttr(draft.amount)}" oninput="updateTxAmount(this.value)"/>
-          </div>
-          <div id="tx-realized-field" style="display:${draft.type==='sell'?'block':'none'};">
-            <label>已實現損益（選填）</label>
-            <input type="number" id="tx-realized" placeholder="留空自動試算" step="0.01" value="${escapeAttr(draft.realized)}" oninput="updateTxDraft('realized', this.value)"/>
-          </div>
-        </div>
-        <button class="btn" style="margin-top:12px;" onclick="addTransaction()">新增紀錄</button>
       </div>
     </div>
 
@@ -2259,6 +2307,7 @@ function renderImportHoldingsSection(){
           <div>
             <label>股票（代號或名稱）</label>
             <input type="text" id="import-symbol" placeholder="例如 2330 或 台積電" value="${escapeAttr(d.symbolInput)}" oninput="updateImportDraft('symbolInput', this.value)"/>
+            <div id="import-symbol-preview" style="font-size:11px; margin-top:3px; min-height:14px;">${previewSymbolMatch(d.symbolInput)}</div>
           </div>
           <div>
             <label>目前股數</label>
