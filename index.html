@@ -368,6 +368,7 @@ const state = {
   reverseDraft: { targetAvg: '', buyPrice: '' },
   feeSettingsCollapsed: true,
   plMonthlyCollapsed: true,
+  plImportedListCollapsed: true,
   feeSettings: {
     buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%
     sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
@@ -466,6 +467,7 @@ function computeUnrealized(h, currentPrice){
 
 function toggleFeeSettings(){ state.feeSettingsCollapsed = !state.feeSettingsCollapsed; render(); }
 function togglePlMonthlyView(){ state.plMonthlyCollapsed = !state.plMonthlyCollapsed; render(); }
+function togglePlImportedList(){ state.plImportedListCollapsed = !state.plImportedListCollapsed; render(); }
 function updateFeeSettings(){
   const buy = parseFloat(document.getElementById('fee-buy').value);
   const sell = parseFloat(document.getElementById('fee-sell').value);
@@ -2281,11 +2283,11 @@ function renderPLSummaryTab(){
     const s = p.symbol ? getStock(p.symbol) : null;
     return `
     <tr>
-      <td>${p.date || p.year}</td>
       <td>${p.symbol ? `${s?s.name:p.symbol} <span class="mono" style="color:var(--text-faint)">${p.symbol}</span>` : '－'}</td>
       <td><span class="tag ${p.category==='dividend'?'neutral':'bull'}">${p.category==='dividend'?'配息':'交易損益'}</span></td>
       <td class="${p.amount>=0?'up-color':'down-color'}">${p.amount>=0?'+':''}${fmt(p.amount,0)}</td>
       <td style="color:var(--text-faint)">${p.note?escapeAttr(p.note):'－'}</td>
+      <td>${p.date || p.year}</td>
       <td><button class="alert-del" onclick="removeImportedPL(${p.id})">✕</button></td>
     </tr>`;
   }).join('');
@@ -2324,12 +2326,17 @@ function renderPLSummaryTab(){
         <button class="btn" style="margin-top:12px;" onclick="addImportedPL()">加入</button>
       </div>
       ${state.importedPL.length ? `
-      <div class="card" style="padding:0; overflow-x:auto; margin-top:12px;">
+      <div class="collapsible-head" style="margin-top:12px;" onclick="togglePlImportedList()">
+        <h3 style="margin:0; font-size:12px; color:var(--text-dim);">已匯入的紀錄（共 ${state.importedPL.length} 筆）</h3>
+        <span class="collapsible-arrow">${state.plImportedListCollapsed ? '▸' : '▾'}</span>
+      </div>
+      ${state.plImportedListCollapsed ? '' : `
+      <div class="card" style="padding:0; overflow-x:auto; margin-top:8px;">
         <table>
-          <thead><tr><th>日期／年度</th><th>股票</th><th>類別</th><th>金額</th><th>備註</th><th></th></tr></thead>
+          <thead><tr><th>股票</th><th>類別</th><th>金額</th><th>備註</th><th>日期／年度</th><th></th></tr></thead>
           <tbody>${importedRows}</tbody>
         </table>
-      </div>` : ''}
+      </div>`}` : ''}
     </div>
   `;
 
@@ -2374,16 +2381,14 @@ function renderPLSummaryTab(){
           </tr></tfoot>
         </table>
       </div>
-    </div>
-    <div class="panel-section">
-      <div class="collapsible-head" onclick="togglePlMonthlyView()">
-        <h3 style="margin:0;">交易損益（依月份）</h3>
+      <div class="collapsible-head" style="margin-top:16px;" onclick="togglePlMonthlyView()">
+        <h3 style="margin:0; font-size:13px;">交易損益（依月份）</h3>
         <span class="collapsible-arrow">${state.plMonthlyCollapsed ? '▸' : '▾'}</span>
       </div>
       ${state.plMonthlyCollapsed ? `
-        <p class="panel-hint" style="cursor:pointer;" onclick="togglePlMonthlyView()">平常看年度數字就夠了，點這裡展開看每個月的明細</p>
+        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="togglePlMonthlyView()">平常看年度數字就夠了，點這裡展開看每個月的明細</p>
       ` : `
-        <p class="panel-hint">「交易紀錄」頁籤中賣出交易的已實現損益，加上上方手動匯入時有填「交易日期」的紀錄（只填年度、沒填日期的匯入資料不會出現在月份裡，只會算進年度總計）</p>
+        <p class="panel-hint" style="margin-top:6px;">「交易紀錄」頁籤中賣出交易的已實現損益，加上上方手動匯入時有填「交易日期」的紀錄（只填年度、沒填日期的匯入資料不會出現在月份裡，只會算進年度總計）</p>
         <div class="card" style="padding:0; overflow-x:auto; max-height:420px; overflow-y:auto;">
           <table>
             <thead><tr><th>月份</th><th>已實現損益</th></tr></thead>
