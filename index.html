@@ -376,6 +376,7 @@ const state = {
   reconciling: false,                   // 「整理重複股票代號」執行中的狀態
   txListCollapsed: true,                // 買賣交易紀錄清單預設收合，輸入表單優先顯示在最上面
   txFormCollapsed: true,                // 新增交易的輸入表單，預設也收合，點開才顯示
+  syncUrlSettingsCollapsed: true,        // 雲端同步網址設定，預設收合，設定過一次後平常不太需要再看
   feeSettings: {
     buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%（個股與 ETF 手續費率通常相同，不分開設定）
     sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
@@ -391,6 +392,11 @@ const state = {
   notifiedAlerts: new Set(),
   dividendYear: new Date().getFullYear(),
   dividendAutoCutoffDate: '2026-09-04', // 只有這天（含）之後的除息日才會自動計算配息；之前的請自行在「匯入過去損益紀錄」手動輸入，避免跟自動抓取重複計算
+  stockAnalysis: {}, // 依代號存放個股分析結果：{ loading, error, fetchedAt, financials, valuation, chip, news }
+  stockAnalysisNotes: {}, // 依代號存放使用者自己寫的產業／商業模式筆記（純文字，手動維護）
+  stockAnalysisNotesDraft: '', // 目前正在編輯中的筆記草稿
+  analysisSectionCollapsed: { fundamentals:false, valuation:true, chip:true, notes:true, news:true },
+  analysisNotesEditing: false,
   dividendCache: {}, // symbol -> { loading, error, records, fetchedAt }
   finmindToken: '',
   importedPL: [], // 手動匯入的過去損益：{ id, year, category:'trade'|'dividend', amount, note, date?, symbol?, importSource? }
@@ -494,6 +500,7 @@ function toggleFeeSettings(){ state.feeSettingsCollapsed = !state.feeSettingsCol
 function toggleTxSymbolGroup(sym){ state.txExpandedSymbol = (state.txExpandedSymbol === sym) ? null : sym; render(); }
 function toggleTxList(){ state.txListCollapsed = !state.txListCollapsed; render(); }
 function toggleTxForm(){ state.txFormCollapsed = !state.txFormCollapsed; render(); }
+function toggleSyncUrlSettings(){ state.syncUrlSettingsCollapsed = !state.syncUrlSettingsCollapsed; render(); }
 function togglePlMonthlyView(){ state.plMonthlyCollapsed = !state.plMonthlyCollapsed; render(); }
 function togglePlYear(y){ state.plExpandedYear = (state.plExpandedYear === y) ? null : y; render(); }
 function togglePlImportedList(){ state.plImportedListCollapsed = !state.plImportedListCollapsed; render(); }
@@ -661,6 +668,245 @@ function seedHistory(base){
 
 /* ================= 真實股價更新（改用 FinMind 最近收盤價，不再是模擬跳動） ================= */
 // 單一檔股票：抓 FinMind 最近收盤價，更新價格與（若有給）真實歷史序列
+// 三大法人買賣超（外資），資料來源 FinMind「TaiwanStockInstitutionalInvestorsBuySell」。
+// 這個資料集是「每一列一個法人類別」，不是每檔股票一列，所以要自己篩出 Foreign_Investor 那幾列。
+// 欄位命名沒有正式文件保證，這裡用寬鬆比對盡量相容（buy/sell 或 buy_price/sell_price 等變體）。
+async function fetchForeignNetBuy(symbol){
+  const end = new Date();
+  const start = new Date(end.getTime() - 10*86400000); // 抓近 10 天，確保能拿到最近一個交易日的資料
+  const fmt2 = d => d.toISOString().slice(0,10);
+  const params = new URLSearchParams({ dataset:'TaiwanStockInstitutionalInvestorsBuySell', data_id: symbol, start_date: fmt2(start), end_date: fmt2(end) });
+  const headers = {};
+  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
+  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  const json = await resp.json();
+  if(json && json.status && json.status !== 200 && json.status !== '200'){
+    throw new Error(json.msg || ('狀態碼 ' + json.status));
+  }
+  const rows = (json.data || []).filter(r => (r.name||'').toLowerCase().includes('foreign'));
+  if(!rows.length) return null;
+  rows.sort((a,b)=> String(a.date).localeCompare(String(b.date)));
+  const last = rows[rows.length-1];
+  const buy = Number(last.buy ?? last.Buy ?? 0);
+  const sell = Number(last.sell ?? last.Sell ?? 0);
+  if(Number.isNaN(buy) || Number.isNaN(sell)) return null;
+  return Math.round((buy - sell) / 1000); // 換算成「張」（1 張 = 1000 股），跟畫面上原本的單位一致
+}
+// 下次財報日：沒有任何免費資料源會直接告訴你「下一次公告日期」，這是用台灣法規規定的申報截止期限
+// 反推估算出來的（不是公司實際會公告的日期，通常會提早，僅供參考）：
+// Q1 財報 5/15 前、半年報 8/14 前、Q3 財報 11/14 前、年報（前一年度）3/31 前。
+function estimateNextEarningsDate(){
+  const now = new Date();
+  const y = now.getFullYear();
+  const deadlines = [
+    new Date(y, 2, 31),   // 3/31 前一年度年報
+    new Date(y, 4, 15),   // 5/15 第一季
+    new Date(y, 7, 14),   // 8/14 半年報
+    new Date(y, 10, 14),  // 11/14 第三季
+  ];
+  const next = deadlines.find(d => d >= now) || new Date(y+1, 2, 31);
+  return (next.getMonth()+1) + '/' + String(next.getDate()).padStart(2,'0') + '（估）';
+}
+
+/* ================= 個股分析：財務基本面／估值技術面／籌碼資金動向／新聞（皆串接 FinMind 真實資料） =================
+   綜合損益表、資產負債表、現金流量表是「長表」格式（每列一個科目），FinMind 官方文件沒有列出 type 的完整
+   對照表，所以改用 origin_name（財報原始中文科目名稱）關鍵字比對抓需要的數字。這是文字比對，不是結構化欄位，
+   遇到少數公司科目命名方式不同時可能抓不到，會顯示「查無資料」而不是顯示錯誤數字。 */
+async function fetchFinMindDataset(dataset, symbol, startDate, endDate){
+  const headers = {};
+  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+  const params = new URLSearchParams({ dataset, data_id: symbol, start_date: startDate });
+  if(endDate) params.set('end_date', endDate);
+  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
+  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  const json = await resp.json();
+  if(json && json.status && json.status !== 200 && json.status !== '200'){
+    throw new Error(json.msg || ('狀態碼 ' + json.status));
+  }
+  return json.data || [];
+}
+function groupByDate(rows){
+  const map = {};
+  rows.forEach(r=>{ if(!map[r.date]) map[r.date]=[]; map[r.date].push(r); });
+  return map;
+}
+function findByOriginName(rows, keywords){
+  for(const kw of keywords){
+    const hit = rows.find(r => r.origin_name && r.origin_name.includes(kw));
+    if(hit) return hit.value;
+  }
+  return null;
+}
+
+async function fetchFinancialFundamentals(symbol){
+  const startDate = '2022-01-01';
+  const [incomeRows, balanceRows, cashflowRows, revenueRows] = await Promise.all([
+    fetchFinMindDataset('TaiwanStockFinancialStatements', symbol, startDate),
+    fetchFinMindDataset('TaiwanStockBalanceSheet', symbol, startDate),
+    fetchFinMindDataset('TaiwanStockCashFlowsStatement', symbol, startDate),
+    fetchFinMindDataset('TaiwanStockMonthRevenue', symbol, startDate),
+  ]);
+
+  const incomeByDate = groupByDate(incomeRows);
+  const incomeDates = Object.keys(incomeByDate).sort().reverse().slice(0,6);
+  const quarters = incomeDates.map(d=>{
+    const rows = incomeByDate[d];
+    const revenue = findByOriginName(rows, ['營業收入合計','營業收入淨額','營業收入']);
+    const grossProfit = findByOriginName(rows, ['營業毛利淨額','營業毛利']);
+    const operatingIncome = findByOriginName(rows, ['營業利益淨額','營業利益（損失）','營業利益']);
+    const netIncome = findByOriginName(rows, ['本期淨利（淨損）歸屬於母公司業主','本期淨利（淨損）','淨利（淨損）','本期淨利']);
+    return {
+      date:d, revenue, grossProfit, operatingIncome, netIncome,
+      grossMargin: (revenue && grossProfit!=null) ? (grossProfit/revenue*100) : null,
+      operatingMargin: (revenue && operatingIncome!=null) ? (operatingIncome/revenue*100) : null,
+      netMargin: (revenue && netIncome!=null) ? (netIncome/revenue*100) : null,
+    };
+  }).reverse();
+
+  const balanceByDate = groupByDate(balanceRows);
+  const latestBalanceDate = Object.keys(balanceByDate).sort().reverse()[0];
+  let equity=null, totalAssets=null, totalLiabilities=null, debtRatio=null, roe=null;
+  if(latestBalanceDate){
+    const rows = balanceByDate[latestBalanceDate];
+    equity = findByOriginName(rows, ['歸屬於母公司業主之權益合計','權益總計','權益總額']);
+    totalAssets = findByOriginName(rows, ['資產總計','資產總額']);
+    totalLiabilities = findByOriginName(rows, ['負債總計','負債總額']);
+    if(totalAssets && totalLiabilities!=null) debtRatio = totalLiabilities/totalAssets*100;
+    const last4NetIncome = quarters.slice(-4).reduce((s,q)=> s + (q.netIncome||0), 0);
+    if(equity) roe = last4NetIncome/equity*100;
+  }
+
+  const cashflowByDate = groupByDate(cashflowRows);
+  const latestCashDate = Object.keys(cashflowByDate).sort().reverse()[0];
+  const operatingCashFlow = latestCashDate
+    ? findByOriginName(cashflowByDate[latestCashDate], ['營業活動之淨現金流入（流出）','營業活動淨現金流入（流出）','營業活動之現金流量'])
+    : null;
+
+  const sortedRevenue = [...revenueRows].sort((a,b)=> (a.revenue_year*100+a.revenue_month) - (b.revenue_year*100+b.revenue_month));
+  const monthly = sortedRevenue.slice(-13).map(r=>{
+    const sameMonthLastYear = sortedRevenue.find(x=> x.revenue_year===r.revenue_year-1 && x.revenue_month===r.revenue_month);
+    const yoy = sameMonthLastYear ? (r.revenue - sameMonthLastYear.revenue)/sameMonthLastYear.revenue*100 : null;
+    return { year:r.revenue_year, month:r.revenue_month, revenue:r.revenue, yoy };
+  });
+
+  return { quarters, equity, totalAssets, totalLiabilities, debtRatio, roe, operatingCashFlow, monthly, cashDate: latestCashDate };
+}
+
+async function fetchValuationData(symbol){
+  const end = new Date();
+  const start = new Date(end.getTime() - 10*86400000);
+  const fmt2 = d=>d.toISOString().slice(0,10);
+  const rows = (await fetchFinMindDataset('TaiwanStockPER', symbol, fmt2(start), fmt2(end)))
+    .sort((a,b)=> String(a.date).localeCompare(String(b.date)));
+  const last = rows[rows.length-1] || null;
+
+  const stock = getStock(symbol);
+  const hist = (stock && Array.isArray(stock.history)) ? stock.history : [];
+  const resistance = hist.length ? Math.max(...hist) : null;
+  const support = hist.length ? Math.min(...hist) : null;
+  const ma20 = hist.length ? (hist.slice(-20).reduce((s,v)=>s+v,0) / Math.min(hist.length,20)) : null;
+
+  return {
+    per: last ? last.PER : null, pbr: last ? last.PBR : null,
+    dividendYield: last ? last.dividend_yield : null, date: last ? last.date : null,
+    support, resistance, ma20,
+  };
+}
+
+async function fetchChipFlowData(symbol){
+  const end = new Date();
+  const start = new Date(end.getTime() - 20*86400000);
+  const fmt2 = d=>d.toISOString().slice(0,10);
+  const [instRows, marginRows] = await Promise.all([
+    fetchFinMindDataset('TaiwanStockInstitutionalInvestorsBuySell', symbol, fmt2(start), fmt2(end)),
+    fetchFinMindDataset('TaiwanStockMarginPurchaseShortSale', symbol, fmt2(start), fmt2(end)),
+  ]);
+
+  const byDate = {};
+  instRows.forEach(r=>{
+    if(!byDate[r.date]) byDate[r.date] = { foreign:0, trust:0 };
+    const net = (Number(r.buy)||0) - (Number(r.sell)||0);
+    if(r.name === 'Foreign_Investor') byDate[r.date].foreign += net;
+    if(r.name === 'Investment_Trust') byDate[r.date].trust += net;
+  });
+  const trend = Object.keys(byDate).sort().map(d=>({
+    date:d, foreign: Math.round(byDate[d].foreign/1000), trust: Math.round(byDate[d].trust/1000),
+  }));
+
+  const marginSorted = [...marginRows].sort((a,b)=> String(a.date).localeCompare(String(b.date)));
+  const lastMargin = marginSorted[marginSorted.length-1] || null;
+  const prevMargin = marginSorted[marginSorted.length-2] || null;
+
+  return {
+    trend,
+    marginBalance: lastMargin ? lastMargin.MarginPurchaseTodayBalance : null,
+    marginChange: (lastMargin && prevMargin) ? (lastMargin.MarginPurchaseTodayBalance - prevMargin.MarginPurchaseTodayBalance) : null,
+    shortBalance: lastMargin ? lastMargin.ShortSaleTodayBalance : null,
+    shortChange: (lastMargin && prevMargin) ? (lastMargin.ShortSaleTodayBalance - prevMargin.ShortSaleTodayBalance) : null,
+    marginDate: lastMargin ? lastMargin.date : null,
+  };
+}
+
+const NEWS_KEYWORD_TAGS = [
+  { tag:'法說會／財測', keywords:['法說','法人說明會','財測','展望','財務預測'] },
+  { tag:'擴產／資本支出', keywords:['擴產','資本支出','CapEx','擴廠','新產能','建廠','投資案'] },
+];
+function tagNewsItem(title){
+  const tags = [];
+  NEWS_KEYWORD_TAGS.forEach(t=>{ if(t.keywords.some(kw=> title.includes(kw))) tags.push(t.tag); });
+  return tags;
+}
+async function fetchStockNewsData(symbol){
+  const days = [];
+  for(let i=0;i<5;i++){ days.push(new Date(Date.now()-i*86400000).toISOString().slice(0,10)); }
+  const results = [];
+  for(const day of days){
+    try{
+      const rows = await fetchFinMindDataset('TaiwanStockNews', symbol, day);
+      results.push(...rows);
+    } catch(e){ /* 這天抓不到就跳過，不影響其他天 */ }
+  }
+  const seen = new Set();
+  const unique = results.filter(n=>{
+    const key = n.date+'|'+n.title;
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  unique.sort((a,b)=> String(b.date).localeCompare(String(a.date)));
+  return unique.slice(0,20).map(n=>({ date:n.date, title:n.title, link:n.link, source:n.source, tags: tagNewsItem(n.title||'') }));
+}
+
+async function runStockAnalysis(symbol){
+  state.stockAnalysis[symbol] = { ...(state.stockAnalysis[symbol]||{}), loading:true, error:null };
+  render();
+  try{
+    const [financials, valuation, chip, news] = await Promise.all([
+      fetchFinancialFundamentals(symbol).catch(err=>({ error:(err&&err.message)||'抓取失敗' })),
+      fetchValuationData(symbol).catch(err=>({ error:(err&&err.message)||'抓取失敗' })),
+      fetchChipFlowData(symbol).catch(err=>({ error:(err&&err.message)||'抓取失敗' })),
+      fetchStockNewsData(symbol).catch(()=>[]),
+    ]);
+    state.stockAnalysis[symbol] = { loading:false, error:null, fetchedAt:new Date().toISOString(), financials, valuation, chip, news };
+  } catch(err){
+    state.stockAnalysis[symbol] = { loading:false, error:(err&&err.message)||'分析失敗', fetchedAt:null };
+  }
+  render();
+}
+function updateStockNotesDraft(value){ state.stockAnalysisNotesDraft = value; }
+function startEditStockNotes(symbol){
+  state.stockAnalysisNotesDraft = state.stockAnalysisNotes[symbol] || '';
+  state.analysisNotesEditing = true;
+  render();
+}
+function saveStockNotes(symbol){
+  state.stockAnalysisNotes[symbol] = state.stockAnalysisNotesDraft;
+  state.analysisNotesEditing = false;
+  render();
+}
+function toggleAnalysisSection(key){ state.analysisSectionCollapsed[key] = !state.analysisSectionCollapsed[key]; render(); }
+
 async function refreshStockPrice(stock){
   try{
     const result = await fetchFinMindPrice(stock.symbol);
@@ -668,6 +914,11 @@ async function refreshStockPrice(stock){
     stock.price = result.price;
     stock.prevClose = result.prevClose;
     if(Array.isArray(result.series) && result.series.length) stock.history = result.series;
+    try{
+      const foreignNet = await fetchForeignNetBuy(stock.symbol);
+      if(foreignNet !== null) stock.foreign = foreignNet;
+    } catch(e){ /* 法人資料查不到就維持原值，不影響股價更新結果 */ }
+    stock.earnings = estimateNextEarningsDate();
     return true;
   } catch(err){
     return false;
@@ -1145,13 +1396,17 @@ async function confirmSheetImport(){
         ensureStockTracked(r.symbol, r.symbolRaw, r.avgCost);
       }
     }
-    state.transactions = state.transactions.filter(t=> !(t.imported && t.symbol===r.symbol && (t.account||'')===(r.account||'')));
+  }
+  // 整批清掉先前透過這個功能匯入的全部紀錄，再整批放入這次的最新內容——確保「重新整理」永遠是完整覆蓋、
+  // 不會累加成兩倍，不管代號解析過程細節如何都不影響這個保證；不會動到手動新增的一般買賣交易
+  state.transactions = state.transactions.filter(t=> t.importSource !== 'sheet');
+  rows.forEach(r=>{
     state.transactions.push({
       id: state.nextTransactionId++, symbol: r.symbol, type:'buy',
       shares: r.shares, price: r.avgCost, date: r.date || new Date().toISOString().slice(0,10),
       realized:null, skipFee:true, imported:true, importSource:'sheet', account: r.account||'',
     });
-  }
+  });
   state.sheetImport.importing = false;
   state.sheetImport.rows = [];
   render();
@@ -1439,6 +1694,7 @@ function persistState(){
       nextAlertId: state.nextAlertId,
       dividendYear: state.dividendYear,
       dividendAutoCutoffDate: state.dividendAutoCutoffDate,
+      stockAnalysisNotes: state.stockAnalysisNotes,
       finmindToken: state.finmindToken,
       importedPL: state.importedPL,
       nextImportedPLId: state.nextImportedPLId,
@@ -1595,6 +1851,7 @@ function applyPersistedData(data){
   if(typeof data.nextAlertId === 'number') state.nextAlertId = data.nextAlertId;
   if(typeof data.dividendYear === 'number') state.dividendYear = data.dividendYear;
   if(typeof data.dividendAutoCutoffDate === 'string') state.dividendAutoCutoffDate = data.dividendAutoCutoffDate;
+  if(data.stockAnalysisNotes && typeof data.stockAnalysisNotes === 'object') state.stockAnalysisNotes = data.stockAnalysisNotes;
   if(typeof data.finmindToken === 'string') state.finmindToken = data.finmindToken;
   if(Array.isArray(data.importedPL)) state.importedPL = data.importedPL;
   if(typeof data.nextImportedPLId === 'number') state.nextImportedPLId = data.nextImportedPLId;
@@ -1632,6 +1889,9 @@ function resetStateForNewUser(){
   state.notifiedAlerts = new Set();
   state.dividendYear = new Date().getFullYear();
   state.dividendAutoCutoffDate = '2026-09-04';
+  state.stockAnalysis = {};
+  state.stockAnalysisNotes = {};
+  state.stockAnalysisNotesDraft = '';
   state.dividendCache = {};
   state.finmindToken = '';
   state.importedPL = [];
@@ -1819,7 +2079,7 @@ function renderMain(sel){
     ['tx','交易紀錄'],
     ['avg','攤平計算'],
     ['dividend','配息'],
-    ['news','個股消息'],
+    ['news','個股分析'],
     ['alerts','價格警示'],
     ['portfolio','持股總覽'],
     ['pl','損益統計'],
@@ -1840,7 +2100,7 @@ function renderMain(sel){
           <div class="chips">
             <span class="chip">昨收 <b class="mono">${fmt(sel.prevClose)}</b></span>
             <span class="chip">外資買賣超 <b class="mono ${sel.foreign>=0?'up-color':'down-color'}">${sel.foreign>=0?'+':''}${fmt(sel.foreign,0)}張</b></span>
-            <span class="chip">下次財報 <b>${sel.earnings}</b></span>
+            <span class="chip" title="依台灣法規規定的財報申報截止期限反推估算，不是公司實際會公告的日期，通常公司會提早公告">下次財報 <b>${sel.earnings}</b></span>
           </div>
         </div>
         <div class="spark-wrap">
@@ -1956,25 +2216,130 @@ function reverseResultHtml(sym){
 }
 
 function renderNewsTab(sel){
-  const items = NEWS_BANK[sel.symbol] || [];
-  if(!items.length){ return `<div class="panel-section"><div class="empty">目前尚無此股票的相關消息</div></div>`; }
-  const tagLabel = { bull:'利多', bear:'利空', neutral:'中性' };
-  return `
+  const symbol = sel.symbol;
+  const a = state.stockAnalysis[symbol] || {};
+  const note = state.stockAnalysisNotes[symbol] || '';
+
+  const headerHtml = `
     <div class="panel-section">
-      <h3>${sel.name} 相關消息</h3>
-      <div class="card">
-        ${items.map(n=>`
-          <div class="news-item">
-            <span class="tag ${n.tag}">${tagLabel[n.tag]}</span>
-            <div class="news-body">
-              <div class="news-title">${n.title}</div>
-              <div class="news-meta">${n.src}・${n.time}</div>
-            </div>
-          </div>
-        `).join('')}
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">${sel.name}（${symbol}）個股分析</h3>
+        <button class="btn" onclick="runStockAnalysis('${symbol}')" ${a.loading?'disabled':''}>${a.loading?'分析中…':'重新分析'}</button>
       </div>
+      <p class="panel-hint">財務、估值、籌碼資料來自 FinMind 真實資料；產業商業模式需要自己寫筆記；新聞分類僅用關鍵字比對標題，不是真的理解內文，僅供參考。${a.fetchedAt?`最後分析時間：${new Date(a.fetchedAt).toLocaleString('zh-TW')}`:'尚未分析過，請按上面的「重新分析」'}</p>
+      ${a.error ? `<div class="warn-box">${escapeAttr(a.error)}</div>` : ''}
     </div>
   `;
+
+  // ---- 財務基本面 ----
+  const fin = a.financials;
+  const finBody = (!fin) ? `<p class="panel-hint">尚未抓取資料</p>` : fin.error ? `<div class="warn-box">${escapeAttr(fin.error)}</div>` : `
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table>
+        <thead><tr><th>季度</th><th>毛利率</th><th>營益率</th><th>淨利率</th></tr></thead>
+        <tbody>${fin.quarters.map(q=>`<tr>
+          <td>${q.date}</td>
+          <td>${q.grossMargin!=null?fmt(q.grossMargin)+'%':'查無資料'}</td>
+          <td>${q.operatingMargin!=null?fmt(q.operatingMargin)+'%':'查無資料'}</td>
+          <td>${q.netMargin!=null?fmt(q.netMargin)+'%':'查無資料'}</td>
+        </tr>`).join('') || `<tr><td colspan="4" style="text-align:center; color:var(--text-faint);">查無季報資料</td></tr>`}</tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-top:10px;">
+      <div class="result-line"><span class="rl-label">ROE（近四季淨利年化 ÷ 最新股東權益）</span><span class="rl-val">${fin.roe!=null?fmt(fin.roe)+'%':'查無資料'}</span></div>
+      <div class="result-line"><span class="rl-label">負債比</span><span class="rl-val">${fin.debtRatio!=null?fmt(fin.debtRatio)+'%':'查無資料'}</span></div>
+      <div class="result-line"><span class="rl-label">最近一期營業活動現金流${fin.cashDate?`（${fin.cashDate}）`:''}</span><span class="rl-val ${fin.operatingCashFlow>=0?'up-color':'down-color'}">${fin.operatingCashFlow!=null?fmt(fin.operatingCashFlow,0):'查無資料'}</span></div>
+    </div>
+    ${fin.monthly && fin.monthly.length ? `
+    <div class="card" style="padding:0; overflow-x:auto; margin-top:10px;">
+      <table>
+        <thead><tr><th>月份</th><th>營收</th><th>年增率</th></tr></thead>
+        <tbody>${fin.monthly.slice(-6).map(m=>`<tr>
+          <td>${m.year}/${String(m.month).padStart(2,'0')}</td>
+          <td>${fmt(m.revenue,0)}</td>
+          <td>${m.yoy!=null?`<span class="${m.yoy>=0?'up-color':'down-color'}">${m.yoy>=0?'+':''}${fmt(m.yoy)}%</span>`:'查無去年同期'}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : ''}
+  `;
+
+  // ---- 估值與技術面 ----
+  const val = a.valuation;
+  const valBody = (!val) ? `<p class="panel-hint">尚未抓取資料</p>` : val.error ? `<div class="warn-box">${escapeAttr(val.error)}</div>` : `
+    <div class="card">
+      <div class="result-line"><span class="rl-label">本益比 PER${val.date?`（${val.date}）`:''}</span><span class="rl-val">${val.per!=null?fmt(val.per):'查無資料'}</span></div>
+      <div class="result-line"><span class="rl-label">股價淨值比 PBR</span><span class="rl-val">${val.pbr!=null?fmt(val.pbr):'查無資料'}</span></div>
+      <div class="result-line"><span class="rl-label">殖利率</span><span class="rl-val">${val.dividendYield!=null?fmt(val.dividendYield)+'%':'查無資料'}</span></div>
+      <div class="result-line"><span class="rl-label">近期壓力（近期高點）</span><span class="rl-val">${val.resistance!=null?fmt(val.resistance):'查無資料'}</span></div>
+      <div class="result-line"><span class="rl-label">近期支撐（近期低點）</span><span class="rl-val">${val.support!=null?fmt(val.support):'查無資料'}</span></div>
+      <div class="result-line"><span class="rl-label">20 日均線（簡易試算）</span><span class="rl-val">${val.ma20!=null?fmt(val.ma20):'查無資料'}</span></div>
+    </div>
+    <p class="panel-hint" style="margin-top:8px;">支撐壓力與均線是用目前已抓到的股價歷史自己算的簡易參考值，不是專業技術分析軟體等級的精確度</p>
+  `;
+
+  // ---- 籌碼資金動向 ----
+  const chip = a.chip;
+  const chipBody = (!chip) ? `<p class="panel-hint">尚未抓取資料</p>` : chip.error ? `<div class="warn-box">${escapeAttr(chip.error)}</div>` : `
+    <div class="card" style="padding:0; overflow-x:auto;">
+      <table>
+        <thead><tr><th>日期</th><th>外資買賣超（張）</th><th>投信買賣超（張）</th></tr></thead>
+        <tbody>${chip.trend.map(t=>`<tr>
+          <td>${t.date}</td>
+          <td class="${t.foreign>=0?'up-color':'down-color'}">${t.foreign>=0?'+':''}${fmt(t.foreign,0)}</td>
+          <td class="${t.trust>=0?'up-color':'down-color'}">${t.trust>=0?'+':''}${fmt(t.trust,0)}</td>
+        </tr>`).join('') || `<tr><td colspan="3" style="text-align:center; color:var(--text-faint);">查無資料</td></tr>`}</tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-top:10px;">
+      <div class="result-line"><span class="rl-label">融資餘額${chip.marginDate?`（${chip.marginDate}）`:''}</span><span class="rl-val">${chip.marginBalance!=null?fmt(chip.marginBalance,0)+' 張':'查無資料'}${chip.marginChange!=null?` <span class="${chip.marginChange>=0?'up-color':'down-color'}">（${chip.marginChange>=0?'+':''}${fmt(chip.marginChange,0)}）</span>`:''}</span></div>
+      <div class="result-line"><span class="rl-label">融券餘額</span><span class="rl-val">${chip.shortBalance!=null?fmt(chip.shortBalance,0)+' 張':'查無資料'}${chip.shortChange!=null?` <span class="${chip.shortChange>=0?'up-color':'down-color'}">（${chip.shortChange>=0?'+':''}${fmt(chip.shortChange,0)}）</span>`:''}</span></div>
+    </div>
+    <p class="panel-hint" style="margin-top:8px;">董監事持股增減：查無適合的免費資料源可以抓取，暫時無法提供這項數據</p>
+  `;
+
+  // ---- 產業商業模式（手動筆記） ----
+  const notesBody = state.analysisNotesEditing ? `
+    <textarea id="analysis-notes-textarea" rows="8" style="width:100%; font-family:inherit;" placeholder="寫下這檔股票的主要營收來源、護城河、總體經濟與法規影響……" oninput="updateStockNotesDraft(this.value)">${escapeAttr(state.stockAnalysisNotesDraft)}</textarea>
+    <button class="btn" style="margin-top:8px;" onclick="saveStockNotes('${symbol}')">儲存筆記</button>
+  ` : `
+    ${note ? `<p style="white-space:pre-wrap;">${escapeAttr(note)}</p>` : `<p class="panel-hint">尚未寫筆記。這項無法自動抓取（護城河、主要營收來源、總體經濟影響都是質性判斷，沒有 API 能提供），你可以自己寫，或直接問我某檔股票的商業模式，我研究後幫你整理進來。</p>`}
+    <button class="btn-ghost" onclick="startEditStockNotes('${symbol}')">${note?'編輯筆記':'新增筆記'}</button>
+  `;
+
+  // ---- 高含金量新聞 ----
+  const news = a.news || [];
+  const newsBody = !news.length ? `<p class="panel-hint">尚無抓到相關新聞（或尚未分析過）</p>` : `
+    <div class="card">
+      ${news.map(n=>`
+        <div class="news-item">
+          ${n.tags.map(t=>`<span class="tag bull">${escapeAttr(t)}</span>`).join('') || '<span class="tag neutral">一般</span>'}
+          <div class="news-body">
+            <div class="news-title">${n.link?`<a href="${escapeAttr(n.link)}" target="_blank" rel="noopener">${escapeAttr(n.title)}</a>`:escapeAttr(n.title)}</div>
+            <div class="news-meta">${escapeAttr(n.source||'')}・${n.date}</div>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  function section(key, title, body){
+    const collapsed = state.analysisSectionCollapsed[key];
+    return `
+    <div class="panel-section">
+      <div class="collapsible-head" onclick="toggleAnalysisSection('${key}')">
+        <h3 style="margin:0;">${title}</h3>
+        <span class="collapsible-arrow">${collapsed?'▸':'▾'}</span>
+      </div>
+      ${collapsed ? '' : `<div style="margin-top:8px;">${body}</div>`}
+    </div>`;
+  }
+
+  return headerHtml
+    + section('fundamentals', '財務基本面', finBody)
+    + section('valuation', '估值與技術面', valBody)
+    + section('chip', '籌碼資金動向', chipBody)
+    + section('notes', '產業商業模式', notesBody)
+    + section('news', '高含金量新聞', newsBody);
 }
 
 function renderAlertsTab(sel){
@@ -2030,132 +2395,122 @@ function renderTransactionsTab(sel){
   const { realizedById } = computeHoldings();
   const typeLabel = { buy:'買進', sell:'賣出' };
 
-  // 依股票分組，每檔股票可收合展開（因為零股分批買入交易筆數會很多）
-  const bySymbol = {};
-  state.transactions.forEach(t=>{
-    if(!bySymbol[t.symbol]) bySymbol[t.symbol] = [];
-    bySymbol[t.symbol].push(t);
-  });
-  const symbolList = Object.keys(bySymbol).sort((a,b)=>{
-    const latestA = bySymbol[a].reduce((m,t)=> t.date>m?t.date:m, '');
-    const latestB = bySymbol[b].reduce((m,t)=> t.date>m?t.date:m, '');
-    return latestB.localeCompare(latestA);
-  });
-
-  const rows = symbolList.map(sym=>{
-    const s = getStock(sym);
-    const txsForSymbol = [...bySymbol[sym]].sort((a,b)=> b.date.localeCompare(a.date) || b.id-a.id);
-    const expanded = state.txExpandedSymbol === sym;
-    const netShares = txsForSymbol.reduce((sum,t)=> sum + (t.type==='buy'?t.shares:-t.shares), 0);
-    const subRows = expanded ? txsForSymbol.map(t=>{
-      const amount = t.shares*t.price;
-      const realizedCell = t.type==='sell'
-        ? (()=>{ const r = realizedById[t.id]; return r===undefined ? '－' : `<span class="${r>=0?'up-color':'down-color'}">${r>=0?'+':''}${fmt(r,0)}</span>`; })()
-        : '－';
-      return `<tr>
-        <td>${t.date}</td>
-        <td><span class="tag ${t.type==='buy'?'bull':'bear'}">${typeLabel[t.type]}</span>${t.imported?' <span class="tag neutral" title="由「持股總覽」匯入的期初持股，不重複計算手續費">期初匯入</span>':''}</td>
-        <td>${fmt(t.shares,0)}</td>
-        <td>${fmt(t.price)}</td>
-        <td>${fmt(amount,0)}</td>
-        <td>${t.account?escapeAttr(t.account):'－'}</td>
-        <td>${realizedCell}</td>
-        <td><button class="alert-del" onclick="removeTransaction(${t.id})">✕</button></td>
-      </tr>`;
-    }).join('') : '';
-    return `<tr style="cursor:pointer; background:var(--surface-2);" onclick="toggleTxSymbolGroup('${sym}')">
-      <td colspan="8">
-        <span class="collapsible-arrow" style="margin-right:6px;">${expanded?'▾':'▸'}</span>
-        <b>${s?s.name:sym}</b> <span class="mono" style="color:var(--text-faint);">${sym}</span>
-        <span style="color:var(--text-faint); margin-left:10px;">共 ${txsForSymbol.length} 筆交易・目前股數 ${fmt(netShares,0)}</span>
-      </td>
-    </tr>${subRows}`;
+  // 只顯示最近 10 筆（依日期），完整歷史仍然全部保留在資料裡，只是列表不會全部列出來
+  const recentTxs = [...state.transactions].sort((a,b)=> b.date.localeCompare(a.date) || b.id-a.id).slice(0,10);
+  const rows = recentTxs.map(t=>{
+    const s = getStock(t.symbol);
+    const amount = t.shares*t.price;
+    const realizedCell = t.type==='sell'
+      ? (()=>{ const r = realizedById[t.id]; return r===undefined ? '－' : `<span class="${r>=0?'up-color':'down-color'}">${r>=0?'+':''}${fmt(r,0)}</span>`; })()
+      : '－';
+    return `<tr>
+      <td>${t.date}</td>
+      <td>${s?s.name:t.symbol} <span class="mono" style="color:var(--text-faint);">${t.symbol}</span></td>
+      <td><span class="tag ${t.type==='buy'?'bull':'bear'}">${typeLabel[t.type]}</span>${t.imported?' <span class="tag neutral" title="由「持股總覽」匯入的期初持股，不重複計算手續費">期初匯入</span>':''}</td>
+      <td>${fmt(t.shares,0)}</td>
+      <td>${fmt(t.price)}</td>
+      <td>${fmt(amount,0)}</td>
+      <td>${t.account?escapeAttr(t.account):'－'}</td>
+      <td>${realizedCell}</td>
+      <td><button class="alert-del" onclick="removeTransaction(${t.id})">✕</button></td>
+    </tr>`;
   }).join('');
 
   const fee = state.feeSettings;
   const draft = state.txDraft;
+  const syncStatusText = !state.sync.url ? '尚未設定同步網址'
+    : state.sync.status==='syncing' ? '同步中…'
+    : state.sync.status==='ok' ? `已同步${state.sync.lastSyncAt ? '（'+new Date(state.sync.lastSyncAt).toLocaleTimeString('zh-TW',{hour12:false})+'）' : ''}`
+    : state.sync.status==='error' ? `同步失敗：${state.sync.error||''}`
+    : '尚未同步';
 
   return `
     <div class="panel-section">
-      <div class="collapsible-head" onclick="toggleTxForm()">
-        <h3 style="margin:0;">新增買賣交易</h3>
-        <span class="collapsible-arrow">${state.txFormCollapsed ? '▸' : '▾'}</span>
-      </div>
-      ${state.txFormCollapsed ? `
-        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="toggleTxForm()">點這裡展開，輸入一筆新的買進／賣出紀錄</p>
-      ` : `
-        <p class="panel-hint">股票可直接輸入代號或名稱，下方會即時顯示對應到的另一邊，方便確認打對股票；成交總金額會依股數×成交價自動帶出，如果跟實際扣款金額有落差，也可以直接改總金額，系統會自動回推每股成交價</p>
-        <div class="card">
-          <div class="field-grid">
-            <div>
-              <label>日期</label>
-              <input type="date" id="tx-date" value="${draft.date}" onchange="updateTxDraft('date', this.value)"/>
-            </div>
-            <div>
-              <label>股票（代號或名稱）</label>
-              <input type="text" id="tx-symbol" value="${escapeAttr(draft.symbolInput)}" placeholder="例如 2330 或 台積電" oninput="updateTxDraft('symbolInput', this.value)"/>
-              <div id="tx-symbol-preview" style="font-size:11px; margin-top:3px; min-height:14px;">${previewSymbolMatch(draft.symbolInput)}</div>
-            </div>
-            <div>
-              <label>帳戶（選填）</label>
-              <input type="text" id="tx-account" value="${escapeAttr(draft.account)}" placeholder="例如 台新／凱基／國泰" oninput="updateTxDraft('account', this.value)"/>
-            </div>
-            <div>
-              <label>類型</label>
-              <select id="tx-type" onchange="handleTxTypeChange(this.value)">
-                <option value="buy" ${draft.type==='buy'?'selected':''}>買進</option>
-                <option value="sell" ${draft.type==='sell'?'selected':''}>賣出</option>
-              </select>
-            </div>
-            <div>
-              <label>股數</label>
-              <input type="number" id="tx-shares" placeholder="股數" min="0" value="${escapeAttr(draft.shares)}" oninput="updateTxDraft('shares', this.value)"/>
-            </div>
-            <div>
-              <label>成交價</label>
-              <input type="number" id="tx-price" placeholder="每股價格" min="0" step="0.01" value="${escapeAttr(draft.price)}" oninput="updateTxDraft('price', this.value)"/>
-            </div>
-            <div>
-              <label>成交總金額</label>
-              <input type="number" id="tx-amount" placeholder="自動帶出，可修改" min="0" step="0.01" value="${escapeAttr(draft.amount)}" oninput="updateTxAmount(this.value)"/>
-            </div>
-            <div id="tx-realized-field" style="display:${draft.type==='sell'?'block':'none'};">
-              <label>已實現損益（選填）</label>
-              <input type="number" id="tx-realized" placeholder="留空自動試算" step="0.01" value="${escapeAttr(draft.realized)}" oninput="updateTxDraft('realized', this.value)"/>
-            </div>
+      <h3>新增買賣交易</h3>
+      <p class="panel-hint">股票可直接輸入代號或名稱，下方會即時顯示對應到的另一邊，方便確認打對股票；成交總金額會依股數×成交價自動帶出，如果跟實際扣款金額有落差，也可以直接改總金額，系統會自動回推每股成交價</p>
+      <div class="card">
+        <div class="field-grid">
+          <div>
+            <label>日期</label>
+            <input type="date" id="tx-date" value="${draft.date}" onchange="updateTxDraft('date', this.value)"/>
           </div>
-          <button class="btn" style="margin-top:12px;" onclick="addTransaction()">新增紀錄</button>
+          <div>
+            <label>股票（代號或名稱）</label>
+            <input type="text" id="tx-symbol" value="${escapeAttr(draft.symbolInput)}" placeholder="例如 2330 或 台積電" oninput="updateTxDraft('symbolInput', this.value)"/>
+            <div id="tx-symbol-preview" style="font-size:11px; margin-top:3px; min-height:14px;">${previewSymbolMatch(draft.symbolInput)}</div>
+          </div>
+          <div>
+            <label>帳戶（選填）</label>
+            <input type="text" id="tx-account" value="${escapeAttr(draft.account)}" placeholder="例如 台新／凱基／國泰" oninput="updateTxDraft('account', this.value)"/>
+          </div>
+          <div>
+            <label>類型</label>
+            <select id="tx-type" onchange="handleTxTypeChange(this.value)">
+              <option value="buy" ${draft.type==='buy'?'selected':''}>買進</option>
+              <option value="sell" ${draft.type==='sell'?'selected':''}>賣出</option>
+            </select>
+          </div>
+          <div>
+            <label>股數</label>
+            <input type="number" id="tx-shares" placeholder="股數" min="0" value="${escapeAttr(draft.shares)}" oninput="updateTxDraft('shares', this.value)"/>
+          </div>
+          <div>
+            <label>成交價</label>
+            <input type="number" id="tx-price" placeholder="每股價格" min="0" step="0.01" value="${escapeAttr(draft.price)}" oninput="updateTxDraft('price', this.value)"/>
+          </div>
+          <div>
+            <label>成交總金額</label>
+            <input type="number" id="tx-amount" placeholder="自動帶出，可修改" min="0" step="0.01" value="${escapeAttr(draft.amount)}" oninput="updateTxAmount(this.value)"/>
+          </div>
+          <div id="tx-realized-field" style="display:${draft.type==='sell'?'block':'none'};">
+            <label>已實現損益（選填）</label>
+            <input type="number" id="tx-realized" placeholder="留空自動試算" step="0.01" value="${escapeAttr(draft.realized)}" oninput="updateTxDraft('realized', this.value)"/>
+          </div>
         </div>
-      `}
+        <button class="btn" style="margin-top:12px;" onclick="addTransaction()">新增紀錄</button>
+      </div>
       <div class="collapsible-head" style="margin-top:16px;" onclick="toggleTxList()">
-        <h3 style="margin:0; font-size:13px;">交易清單（共 ${state.transactions.length} 筆）</h3>
+        <h3 style="margin:0; font-size:13px;">交易清單（最近 10 筆，共 ${state.transactions.length} 筆）</h3>
         <span class="collapsible-arrow">${state.txListCollapsed ? '▸' : '▾'}</span>
       </div>
       ${state.txListCollapsed ? `
-        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="toggleTxList()">點這裡展開查看依股票分組的完整交易清單</p>
+        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="toggleTxList()">點這裡展開查看最近 10 筆交易</p>
       ` : `
         <div class="card" style="padding:0; overflow-x:auto; margin-top:8px;">
           <table>
-            <thead><tr><th>日期</th><th>類型</th><th>股數</th><th>成交價</th><th>金額</th><th>帳戶</th><th>已實現損益</th><th></th></tr></thead>
-            <tbody>${rows || `<tr><td colspan="8" style="text-align:center; font-family:'Noto Sans TC',sans-serif; color:var(--text-faint); padding:16px 0;">尚無交易紀錄</td></tr>`}</tbody>
+            <thead><tr><th>日期</th><th>股票</th><th>類型</th><th>股數</th><th>成交價</th><th>金額</th><th>帳戶</th><th>已實現損益</th><th></th></tr></thead>
+            <tbody>${rows || `<tr><td colspan="9" style="text-align:center; font-family:'Noto Sans TC',sans-serif; color:var(--text-faint); padding:16px 0;">尚無交易紀錄</td></tr>`}</tbody>
           </table>
         </div>
       `}
     </div>
 
     <div class="panel-section">
-      <h3>雲端同步</h3>
-      <p class="panel-hint">貼上 Google Apps Script 部署後的網址，資料會加密推一份到你自己的 Google 試算表；換電腦、換瀏覽器時，登入畫面貼上同一組帳號密碼＋同一個網址即可取回。留空就只存在這台瀏覽器。<br/>本機每次修改都會馬上存檔，但雲端最多<b>每小時自動同步一次</b>（另外會在關閉分頁前補推一次），避免浪費 Apps Script 的使用額度；想立刻同步可以按「立即同步」。</p>
-      <div class="card">
-        <div class="field-grid" style="grid-template-columns: 1fr;">
-          <div>
-            <label>Apps Script 網址</label>
-            <input type="text" id="sync-url-setting" value="${escapeAttr(state.sync.url)}" placeholder="https://script.google.com/macros/s/.../exec" oninput="updateSyncUrlSetting(this.value)"/>
-          </div>
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">雲端同步</h3>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:11px; color:var(--text-faint);">${escapeAttr(syncStatusText)}</span>
+          <button class="btn-ghost" onclick="manualSyncNow()">立即同步</button>
         </div>
-        <button class="btn" style="margin-top:12px;" onclick="manualSyncNow()">立即同步</button>
-        ${state.sync.url ? `<p class="panel-hint" style="margin:10px 0 0;">狀態：${state.sync.status==='syncing'?'同步中…':state.sync.status==='ok'?'已同步':state.sync.status==='error'?('失敗－'+escapeAttr(state.sync.error||'')):'尚未同步'}${state.sync.lastSyncAt?'（最後一次：'+new Date(state.sync.lastSyncAt).toLocaleString('zh-TW')+'）':''}</p>` : ''}
       </div>
+      <p class="panel-hint">本機每次修改都會馬上存檔，但雲端最多<b>每小時自動同步一次</b>（另外會在關閉分頁前補推一次），避免浪費 Apps Script 的使用額度；想立刻同步可以按上面的「立即同步」。</p>
+      <div class="collapsible-head" onclick="toggleSyncUrlSettings()">
+        <span style="font-size:12px; color:var(--text-dim); font-weight:600;">同步網址設定</span>
+        <span class="collapsible-arrow">${state.syncUrlSettingsCollapsed ? '▸' : '▾'}</span>
+      </div>
+      ${state.syncUrlSettingsCollapsed ? `
+        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="toggleSyncUrlSettings()">${state.sync.url ? '已設定同步網址，點這裡查看或修改' : '尚未設定同步網址，點這裡貼上 Google Apps Script 網址'}</p>
+      ` : `
+        <div class="card" style="margin-top:8px;">
+          <div class="field-grid" style="grid-template-columns: 1fr;">
+            <div>
+              <label>Apps Script 網址</label>
+              <input type="text" id="sync-url-setting" value="${escapeAttr(state.sync.url)}" placeholder="https://script.google.com/macros/s/.../exec" oninput="updateSyncUrlSetting(this.value)"/>
+            </div>
+          </div>
+          <p class="panel-hint" style="margin-top:8px; margin-bottom:0;">貼上 Google Apps Script 部署後的網址，資料會加密推一份到你自己的 Google 試算表；換電腦、換瀏覽器時，登入畫面貼上同一組帳號密碼＋同一個網址即可取回。留空就只存在這台瀏覽器。</p>
+        </div>
+      `}
     </div>
 
     <div class="panel-section">
@@ -2207,7 +2562,7 @@ function renderSheetImportSection(){
       <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 4px;">方法一：從 Google 試算表自動匯入</h3>
       <p class="panel-hint" style="margin:0 0 12px;">
         試算表需先設定「共用」→「知道連結的任何人」可檢視；第一列請放欄位標題，系統會自動比對這些欄位（不限順序、可中英文）：<b>代號</b>（股票代號或名稱）、<b>股數</b>、<b>總成本</b>（這檔股票總共花了多少錢買進，不是每股平均成本）、<b>日期</b>（選填，起始持有日期）、<b>帳戶</b>（選填，例如台新／凱基／國泰，同一檔股票在不同帳戶請分開列）。
-        每次按「重新整理」都會用試算表最新內容，取代同一檔股票＋同一個帳戶先前透過此功能匯入的資料，所以放心重複抓取，不會疊加成兩倍股數；但不會動到你手動新增的一般買賣交易。
+        每次按「重新整理」＋「確認匯入」，都會<b>整批取代</b>先前透過這個功能匯入的全部資料（不論哪一檔股票、哪個帳戶），改成這次試算表裡的最新內容，所以放心重複抓取，不會疊加成兩倍股數；但完全不會動到你手動新增的一般買賣交易。
       </p>
       <div class="field-grid" style="grid-template-columns: 1fr;">
         <div>
