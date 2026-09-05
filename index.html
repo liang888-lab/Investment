@@ -386,6 +386,7 @@ const state = {
   nextAlertId: 3,
   notifiedAlerts: new Set(),
   dividendYear: new Date().getFullYear(),
+  dividendAutoCutoffDate: '2026-09-04', // 只有這天（含）之後的除息日才會自動計算配息；之前的請自行在「匯入過去損益紀錄」手動輸入，避免跟自動抓取重複計算
   dividendCache: {}, // symbol -> { loading, error, records, fetchedAt }
   finmindToken: '',
   importedPL: [], // 手動匯入的過去損益：{ id, year, category:'trade'|'dividend', amount, note, date?, symbol?, importSource? }
@@ -1327,6 +1328,7 @@ function persistState(){
       alerts: state.alerts,
       nextAlertId: state.nextAlertId,
       dividendYear: state.dividendYear,
+      dividendAutoCutoffDate: state.dividendAutoCutoffDate,
       finmindToken: state.finmindToken,
       importedPL: state.importedPL,
       nextImportedPLId: state.nextImportedPLId,
@@ -1482,6 +1484,7 @@ function applyPersistedData(data){
   if(Array.isArray(data.alerts)) state.alerts = data.alerts;
   if(typeof data.nextAlertId === 'number') state.nextAlertId = data.nextAlertId;
   if(typeof data.dividendYear === 'number') state.dividendYear = data.dividendYear;
+  if(typeof data.dividendAutoCutoffDate === 'string') state.dividendAutoCutoffDate = data.dividendAutoCutoffDate;
   if(typeof data.finmindToken === 'string') state.finmindToken = data.finmindToken;
   if(Array.isArray(data.importedPL)) state.importedPL = data.importedPL;
   if(typeof data.nextImportedPLId === 'number') state.nextImportedPLId = data.nextImportedPLId;
@@ -1518,6 +1521,7 @@ function resetStateForNewUser(){
   state.nextAlertId = 1;
   state.notifiedAlerts = new Set();
   state.dividendYear = new Date().getFullYear();
+  state.dividendAutoCutoffDate = '2026-09-04';
   state.dividendCache = {};
   state.finmindToken = '';
   state.importedPL = [];
@@ -2446,7 +2450,7 @@ function renderPLSummaryTab(){
     ${importSection}
     <div class="panel-section">
       <h3>已實現損益統計（依年度，區分交易損益／配息）</h3>
-      <p class="panel-hint">交易損益＝「交易紀錄」頁籤中賣出交易的已實現損益＋上方手動匯入的交易損益；配息會依你目前持股，自動比對每次除息日前的實際持有股數判斷資格，不需要手動輸入——但需要先抓取過資料才有數字，見下方按鈕。點年度那一列可以展開看該年度各月份的交易損益。</p>
+      <p class="panel-hint">交易損益＝「交易紀錄」頁籤中賣出交易的已實現損益＋上方手動匯入的交易損益；配息會依你目前持股，自動比對每次除息日前的實際持有股數判斷資格，不需要手動輸入——但只會自動計算「配息」頁籤設定裡「自動計算的起始日期」（目前是 ${escapeAttr(state.dividendAutoCutoffDate)}）當天以後的除息事件，這天之前的配息請在上方「匯入過去損益紀錄」手動補登，避免重複計算兩次。點年度那一列可以展開看該年度各月份的交易損益。</p>
       ${dividendTrackedSymbols.length ? `
       <div class="card" style="margin-bottom:12px;">
         <div class="result-line">
@@ -2663,15 +2667,17 @@ async function fetchAllDividends(){
 }
 function updateFinmindToken(val){ state.finmindToken = val; }
 function updateDividendYear(val){ state.dividendYear = parseInt(val,10) || new Date().getFullYear(); render(); }
+function updateDividendCutoff(val){ state.dividendAutoCutoffDate = val || ''; render(); }
 
 // 依除權息日前一日的持股快照，判斷是否符合配息資格，回傳該年度所有符合資格的配息事件
 function computeDividendEvents(symbol, year){
   const cache = state.dividendCache[symbol];
   if(!cache || !cache.records) return [];
+  const cutoff = state.dividendAutoCutoffDate;
   const events = [];
   cache.records.forEach(r=>{
     const exDate = r.CashExDividendTradingDate;
-    if(exDate && exDate.slice(0,4) === String(year)){
+    if(exDate && exDate.slice(0,4) === String(year) && (!cutoff || exDate >= cutoff)){
       const perShare = (parseFloat(r.CashEarningsDistribution)||0) + (parseFloat(r.CashStatutorySurplus)||0);
       if(perShare > 0){
         const shares = holdingsAsOf(symbol, exDate);
@@ -2679,7 +2685,7 @@ function computeDividendEvents(symbol, year){
       }
     }
     const exDateStock = r.StockExDividendTradingDate;
-    if(exDateStock && exDateStock.slice(0,4) === String(year)){
+    if(exDateStock && exDateStock.slice(0,4) === String(year) && (!cutoff || exDateStock >= cutoff)){
       const stockPerShareValue = (parseFloat(r.StockEarningsDistribution)||0) + (parseFloat(r.StockStatutorySurplus)||0);
       if(stockPerShareValue > 0){
         const shares = holdingsAsOf(symbol, exDateStock);
@@ -2756,8 +2762,13 @@ function renderDividendTab(){
             <label>FinMind API Token（選填）</label>
             <input type="text" id="finmind-token" value="${escapeAttr(state.finmindToken)}" placeholder="留空使用免費額度" oninput="updateFinmindToken(this.value)"/>
           </div>
+          <div class="field">
+            <label>自動計算的起始日期</label>
+            <input type="date" id="dividend-cutoff" value="${escapeAttr(state.dividendAutoCutoffDate)}" onchange="updateDividendCutoff(this.value)"/>
+          </div>
         </div>
-        <button class="btn" onclick="fetchAllDividends()">重新抓取所有持股的配息資料</button>
+        <p class="panel-hint" style="margin-top:8px; margin-bottom:0;">只有<b>這天（含）之後</b>的除息日才會自動計算配息；這天之前的除息事件系統會自動略過，不計入自動抓取的總額，避免跟你在「損益統計」頁籤手動輸入的舊資料重複計算兩次——這個日期以前的配息，請自行在那邊手動補登。</p>
+        <button class="btn" style="margin-top:10px;" onclick="fetchAllDividends()">重新抓取所有持股的配息資料</button>
       </div>
     </div>
 
