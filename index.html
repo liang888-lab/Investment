@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>股市監控台</title>
+<title>韭菜茁壯日誌</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -244,6 +244,8 @@
   .tag.bear{ background:var(--down-dim); color:var(--down); }
   .tag.neutral{ background:var(--surface-3); color:var(--text-dim); }
   .news-body .news-title{ font-size:13px; margin-bottom:3px; }
+  .news-body .news-title a{ color:var(--text); text-decoration:none; }
+  .news-body .news-title a:hover{ text-decoration:underline; }
   .news-meta{ font-size:11px; color:var(--text-faint); }
 
   /* alerts */
@@ -395,6 +397,17 @@ const state = {
   stockAnalysis: {}, // 依代號存放個股分析結果：{ loading, error, fetchedAt, financials, valuation, chip, news }
   stockAnalysisNotes: {}, // 依代號存放使用者自己寫的產業／商業模式筆記（純文字，手動維護）
   stockAnalysisNotesDraft: '', // 目前正在編輯中的筆記草稿
+  channels: [], // 頻道摘要用：{ id, name, links:[{ id, url, title, symbol, symbolRaw, summary, done, addedAt }] }
+  nextChannelId: 1,
+  nextChannelLinkId: 1,
+  activeChannelId: null,
+  channelNameDraft: '',
+  showAddChannelForm: false,
+  channelLinkDraft: { url:'', title:'', symbolInput:'' },
+  channelLinkEditingId: null,
+  channelLinkSummaryDraft: '',
+  channelLinkExpandedId: null,
+  channelSearchQuery: '',
   analysisSectionCollapsed: { fundamentals:false, valuation:true, chip:true, notes:true, news:true },
   analysisNotesEditing: false,
   finmindQuota: { loading:false, error:null, userCount:null, limit:null, checkedAt:null },
@@ -633,7 +646,7 @@ function handleNotifyClick(){
 }
 function sendTestNotification(){
   if(!notifySupported() || Notification.permission !== 'granted') return;
-  const n = new Notification('股市監控台・測試通知', {
+  const n = new Notification('韭菜茁壯日誌・測試通知', {
     body: '這是一則範例：台積電 已達目標價 1,050.00（現價 1,052.30）',
     tag: 'stock-alert-test',
   });
@@ -881,38 +894,44 @@ function calcADX(highs, lows, closes, period){
 function summarizeSignals(ind){
   let buy=0, sell=0, neutral=0;
   const detail = [];
+  let rsiLabel=null, kdLabel=null, macdLabel=null, williamsRLabel=null, adxLabel=null;
   if(ind.rsi!=null){
-    if(ind.rsi>=70){ sell++; detail.push('RSI 超買（賣出訊號）'); }
-    else if(ind.rsi<=30){ buy++; detail.push('RSI 超賣（買進訊號）'); }
-    else { neutral++; detail.push('RSI 中性'); }
+    if(ind.rsi>=70){ sell++; rsiLabel='超買（賣出訊號）'; }
+    else if(ind.rsi<=30){ buy++; rsiLabel='超賣（買進訊號）'; }
+    else { neutral++; rsiLabel='中性'; }
+    detail.push('RSI '+rsiLabel);
   }
   if(ind.kd){
-    if(ind.kd.k>=80){ sell++; detail.push('KD 超買（賣出訊號）'); }
-    else if(ind.kd.k<=20){ buy++; detail.push('KD 超賣（買進訊號）'); }
-    else if(ind.kd.k>ind.kd.d){ buy++; detail.push('KD 黃金交叉偏多'); }
-    else { sell++; detail.push('KD 死亡交叉偏空'); }
+    if(ind.kd.k>=80){ sell++; kdLabel='超買（賣出訊號）'; }
+    else if(ind.kd.k<=20){ buy++; kdLabel='超賣（買進訊號）'; }
+    else if(ind.kd.k>ind.kd.d){ buy++; kdLabel='黃金交叉偏多'; }
+    else { sell++; kdLabel='死亡交叉偏空'; }
+    detail.push('KD '+kdLabel);
   }
   if(ind.macd){
-    if(ind.macd.histogram>0){ buy++; detail.push('MACD 柱狀體翻正（偏多）'); }
-    else { sell++; detail.push('MACD 柱狀體翻負（偏空）'); }
+    if(ind.macd.histogram>0){ buy++; macdLabel='柱狀體翻正（偏多）'; }
+    else { sell++; macdLabel='柱狀體翻負（偏空）'; }
+    detail.push('MACD '+macdLabel);
   }
   if(ind.williamsR!=null){
-    if(ind.williamsR>=-20){ sell++; detail.push('威廉指標超買（賣出訊號）'); }
-    else if(ind.williamsR<=-80){ buy++; detail.push('威廉指標超賣（買進訊號）'); }
-    else { neutral++; detail.push('威廉指標中性'); }
+    if(ind.williamsR>=-20){ sell++; williamsRLabel='超買（賣出訊號）'; }
+    else if(ind.williamsR<=-80){ buy++; williamsRLabel='超賣（買進訊號）'; }
+    else { neutral++; williamsRLabel='中性'; }
+    detail.push('威廉指標 '+williamsRLabel);
   }
   if(ind.adx){
     const trending = ind.adx.adx>=25;
-    if(trending && ind.adx.plusDI>ind.adx.minusDI){ buy++; detail.push('ADX 顯示上升趨勢明確'); }
-    else if(trending && ind.adx.minusDI>ind.adx.plusDI){ sell++; detail.push('ADX 顯示下降趨勢明確'); }
-    else { neutral++; detail.push('ADX 顯示目前無明確趨勢（盤整）'); }
+    if(trending && ind.adx.plusDI>ind.adx.minusDI){ buy++; adxLabel='顯示上升趨勢明確'; }
+    else if(trending && ind.adx.minusDI>ind.adx.plusDI){ sell++; adxLabel='顯示下降趨勢明確'; }
+    else { neutral++; adxLabel='顯示目前無明確趨勢（盤整）'; }
+    detail.push('ADX '+adxLabel);
   }
   let overall = '中性';
   if(buy>sell+1) overall='偏多';
   else if(sell>buy+1) overall='偏空';
   else if(buy>sell) overall='略偏多';
   else if(sell>buy) overall='略偏空';
-  return { overall, buy, sell, neutral, detail };
+  return { overall, buy, sell, neutral, detail, rsiLabel, kdLabel, macdLabel, williamsRLabel, adxLabel };
 }
 async function fetchTechnicalIndicators(symbol){
   const end = new Date();
@@ -1057,6 +1076,101 @@ function saveStockNotes(symbol){
   render();
 }
 function toggleAnalysisSection(key){ state.analysisSectionCollapsed[key] = !state.analysisSectionCollapsed[key]; render(); }
+
+/* ================= 頻道摘要：整理你自己貼進來的連結來源，摘要內容由你在對話裡跟 Claude 要，貼回來存檔 =================
+   這個頁籤本身不會自動去抓網頁內容或呼叫 AI（純前端網頁沒有這個能力），單純是「連結＋摘要」的整理／歸檔工具。 */
+function toggleAddChannelForm(){ state.showAddChannelForm = !state.showAddChannelForm; render(); }
+function updateChannelNameDraft(value){ state.channelNameDraft = value; }
+function addChannel(){
+  const name = (state.channelNameDraft||'').trim();
+  if(!name){ alert('請輸入頻道名稱'); return; }
+  const id = state.nextChannelId++;
+  state.channels.push({ id, name, links: [] });
+  state.channelNameDraft = '';
+  state.showAddChannelForm = false;
+  state.activeChannelId = id;
+  render();
+}
+function removeChannel(id){
+  const ch = state.channels.find(c=>c.id===id);
+  if(!ch) return;
+  if(!confirm(`確定要刪除頻道「${ch.name}」嗎？裡面 ${ch.links.length} 筆連結會一起刪除，且無法復原。`)) return;
+  state.channels = state.channels.filter(c=>c.id!==id);
+  if(state.activeChannelId===id) state.activeChannelId = state.channels.length ? state.channels[0].id : null;
+  render();
+}
+function selectChannel(id){ state.activeChannelId = id; render(); }
+function updateChannelLinkDraft(field, value){ state.channelLinkDraft[field] = value; }
+function addChannelLink(){
+  const ch = state.channels.find(c=>c.id===state.activeChannelId);
+  if(!ch){ alert('請先新增或選擇一個頻道'); return; }
+  const url = (state.channelLinkDraft.url||'').trim();
+  if(!url){ alert('請貼上連結網址'); return; }
+  const symbolInput = (state.channelLinkDraft.symbolInput||'').trim();
+  const symbol = symbolInput ? resolveSymbolInput(symbolInput) : '';
+  ch.links.unshift({
+    id: state.nextChannelLinkId++, url,
+    title: (state.channelLinkDraft.title||'').trim(),
+    symbol: symbol||'', symbolRaw: symbolInput,
+    summary: '', done:false, addedAt: new Date().toISOString(),
+  });
+  state.channelLinkDraft = { url:'', title:'', symbolInput:'' };
+  render();
+}
+function removeChannelLink(channelId, linkId){
+  const ch = state.channels.find(c=>c.id===channelId);
+  if(!ch) return;
+  ch.links = ch.links.filter(l=>l.id!==linkId);
+  render();
+}
+function startEditChannelLinkSummary(linkId, currentSummary){
+  state.channelLinkEditingId = linkId;
+  state.channelLinkSummaryDraft = currentSummary || '';
+  render();
+}
+function updateChannelLinkSummaryDraft(value){ state.channelLinkSummaryDraft = value; }
+function cancelEditChannelLinkSummary(){ state.channelLinkEditingId = null; render(); }
+function saveChannelLinkSummary(channelId, linkId){
+  const ch = state.channels.find(c=>c.id===channelId);
+  if(!ch) return;
+  const link = ch.links.find(l=>l.id===linkId);
+  if(!link) return;
+  link.summary = state.channelLinkSummaryDraft;
+  link.done = !!state.channelLinkSummaryDraft.trim();
+  state.channelLinkEditingId = null;
+  render();
+}
+function editChannelLinkSymbol(channelId, linkId){
+  const ch = state.channels.find(c=>c.id===channelId);
+  if(!ch) return;
+  const link = ch.links.find(l=>l.id===linkId);
+  if(!link) return;
+  const raw = prompt('這則連結要關聯到哪一檔股票？（代號或名稱，留空清除）', link.symbolRaw||'');
+  if(raw===null) return;
+  const trimmed = raw.trim();
+  link.symbolRaw = trimmed;
+  link.symbol = trimmed ? resolveSymbolInput(trimmed) : '';
+  render();
+}
+function toggleChannelLinkExpand(linkId){
+  state.channelLinkExpandedId = (state.channelLinkExpandedId === linkId) ? null : linkId;
+  render();
+}
+function updateChannelSearchQuery(value){ state.channelSearchQuery = value; render(); }
+function addChannelLinkSummaryToStockNotes(channelId, linkId){
+  const ch = state.channels.find(c=>c.id===channelId);
+  if(!ch) return;
+  const link = ch.links.find(l=>l.id===linkId);
+  if(!link || !link.summary.trim()){ alert('這筆連結還沒有摘要內容'); return; }
+  if(!link.symbol){ alert('這筆連結沒有標註關聯股票，請先點「標註股票」設定'); return; }
+  const s = getStock(link.symbol);
+  const dateStr = link.addedAt ? link.addedAt.slice(0,10) : '';
+  const header = `【${ch.name}】${link.title || link.url}${dateStr?'（'+dateStr+'）':''}`;
+  const existing = state.stockAnalysisNotes[link.symbol] || '';
+  state.stockAnalysisNotes[link.symbol] = (existing ? existing + '\n\n' : '') + header + '\n' + link.summary;
+  alert(`已加入「${s?s.name:link.symbol}」的產業商業模式筆記，可以到「個股分析」頁籤查看`);
+  render();
+}
 // 查詢目前 FinMind 帳號的額度使用量（需要有填 Token，這個查詢端點本身不算在 /api/v4/data 的額度裡）
 async function checkFinmindQuota(){
   if(!state.finmindToken){ alert('請先填上方的 FinMind Token 才能查詢'); return; }
@@ -1767,7 +1881,7 @@ function render(){
       <div class="topbar">
         <div class="brand">
           <span class="brand-mark"></span>
-          <h1>股市監控台</h1>
+          <h1>韭菜茁壯日誌</h1>
           <span class="sub">個人持股觀測儀表板</span>
         </div>
         <div class="topbar-right">
@@ -1867,6 +1981,9 @@ function persistState(){
       dividendYear: state.dividendYear,
       dividendAutoCutoffDate: state.dividendAutoCutoffDate,
       stockAnalysisNotes: state.stockAnalysisNotes,
+      channels: state.channels,
+      nextChannelId: state.nextChannelId,
+      nextChannelLinkId: state.nextChannelLinkId,
       finmindToken: state.finmindToken,
       importedPL: state.importedPL,
       nextImportedPLId: state.nextImportedPLId,
@@ -2024,6 +2141,9 @@ function applyPersistedData(data){
   if(typeof data.dividendYear === 'number') state.dividendYear = data.dividendYear;
   if(typeof data.dividendAutoCutoffDate === 'string') state.dividendAutoCutoffDate = data.dividendAutoCutoffDate;
   if(data.stockAnalysisNotes && typeof data.stockAnalysisNotes === 'object') state.stockAnalysisNotes = data.stockAnalysisNotes;
+  if(Array.isArray(data.channels)) state.channels = data.channels;
+  if(typeof data.nextChannelId === 'number') state.nextChannelId = data.nextChannelId;
+  if(typeof data.nextChannelLinkId === 'number') state.nextChannelLinkId = data.nextChannelLinkId;
   if(typeof data.finmindToken === 'string') state.finmindToken = data.finmindToken;
   if(Array.isArray(data.importedPL)) state.importedPL = data.importedPL;
   if(typeof data.nextImportedPLId === 'number') state.nextImportedPLId = data.nextImportedPLId;
@@ -2065,6 +2185,17 @@ function resetStateForNewUser(){
   state.finmindQuota = { loading:false, error:null, userCount:null, limit:null, checkedAt:null };
   state.stockAnalysisNotes = {};
   state.stockAnalysisNotesDraft = '';
+  state.channels = [];
+  state.nextChannelId = 1;
+  state.nextChannelLinkId = 1;
+  state.activeChannelId = null;
+  state.channelNameDraft = '';
+  state.showAddChannelForm = false;
+  state.channelLinkDraft = { url:'', title:'', symbolInput:'' };
+  state.channelLinkEditingId = null;
+  state.channelLinkSummaryDraft = '';
+  state.channelLinkExpandedId = null;
+  state.channelSearchQuery = '';
   state.dividendCache = {};
   state.finmindToken = '';
   state.importedPL = [];
@@ -2163,7 +2294,7 @@ function loginScreenHtml(){
       <div class="card" style="max-width:380px; width:100%;">
         <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:4px;">
           <span class="brand-mark"></span>
-          <h1 style="margin:0; font-size:18px;">股市監控台</h1>
+          <h1 style="margin:0; font-size:18px;">韭菜茁壯日誌</h1>
         </div>
         <p class="panel-hint" style="margin:4px 0 16px;">輸入使用者名稱與密碼，即可取回上次存在這台瀏覽器的資料；如果是新的使用者名稱，會直接建立一份新的空白資料。</p>
         <div class="field">
@@ -2253,6 +2384,7 @@ function renderMain(sel){
     ['avg','攤平計算'],
     ['dividend','配息'],
     ['news','個股分析'],
+    ['channels','頻道摘要'],
     ['alerts','價格警示'],
     ['portfolio','持股總覽'],
     ['pl','損益統計'],
@@ -2291,6 +2423,7 @@ function renderMain(sel){
         ${state.activeTab==='avg' ? renderAvgTab(sel) : ''}
         ${state.activeTab==='dividend' ? renderDividendTab() : ''}
         ${state.activeTab==='news' ? renderNewsTab(sel) : ''}
+        ${state.activeTab==='channels' ? renderChannelsTab() : ''}
         ${state.activeTab==='alerts' ? renderAlertsTab(sel) : ''}
         ${state.activeTab==='portfolio' ? renderPortfolioTab() : ''}
         ${state.activeTab==='pl' ? renderPLSummaryTab() : ''}
@@ -2394,22 +2527,156 @@ function renderTechnicalIndicators(tech){
   if(tech.error) return `<div class="warn-box" style="margin-top:10px;">${escapeAttr(tech.error)}</div>`;
   const s = tech.signals;
   return `
-    <div class="card" style="margin-top:10px;">
-      <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 8px;">技術指標（${escapeAttr(tech.asOfDate||'')}）</h3>
-      <div class="result-line"><span class="rl-label">RSI（14）</span><span class="rl-val">${tech.rsi!=null?fmt(tech.rsi):'查無資料'}</span></div>
-      <div class="result-line"><span class="rl-label">隨機指標 KD（9）</span><span class="rl-val">${tech.kd?`K ${fmt(tech.kd.k)}／D ${fmt(tech.kd.d)}`:'查無資料'}</span></div>
-      <div class="result-line"><span class="rl-label">MACD（12,26,9）</span><span class="rl-val">${tech.macd?`柱狀體 ${tech.macd.histogram>=0?'+':''}${fmt(tech.macd.histogram,2)}`:'查無資料'}</span></div>
-      <div class="result-line"><span class="rl-label">威廉指標 %R（14）</span><span class="rl-val">${tech.williamsR!=null?fmt(tech.williamsR):'查無資料'}</span></div>
-      <div class="result-line"><span class="rl-label">ADX（14）</span><span class="rl-val">${tech.adx?`${fmt(tech.adx.adx)}（+DI ${fmt(tech.adx.plusDI)}／-DI ${fmt(tech.adx.minusDI)}）`:'查無資料'}</span></div>
-    </div>
     ${s ? `
     <div class="card" style="margin-top:10px;">
       <div class="result-line"><span class="rl-label">綜合訊號</span><span class="rl-val ${SIGNAL_LABEL[s.overall]||''}">${s.overall}（偏多 ${s.buy}／偏空 ${s.sell}／中性 ${s.neutral}）</span></div>
-      <ul style="margin:8px 0 0; padding-left:18px; color:var(--text-dim); font-size:12px;">
-        ${s.detail.map(d=>`<li>${escapeAttr(d)}</li>`).join('')}
-      </ul>
       <p class="panel-hint" style="margin-top:8px; margin-bottom:0;">這是機械式加總五個指標各自的多空判讀，僅供參考，不是專業投資建議；RSI／KD／威廉指標屬於超買超賣型指標，急漲急跌時容易跟 MACD／ADX 這類趨勢型指標意見不一致，這是正常現象，不是算錯</p>
     </div>` : ''}
+    <div class="card" style="margin-top:10px;">
+      <h3 style="font-size:12px; color:var(--text-dim); margin:0 0 8px;">技術指標（${escapeAttr(tech.asOfDate||'')}）</h3>
+      <div class="result-line"><span class="rl-label">RSI（14）</span><span class="rl-val">${tech.rsi!=null?fmt(tech.rsi):'查無資料'}${s&&s.rsiLabel?`　${s.rsiLabel}`:''}</span></div>
+      <div class="result-line"><span class="rl-label">隨機指標 KD（9）</span><span class="rl-val">${tech.kd?`K ${fmt(tech.kd.k)}／D ${fmt(tech.kd.d)}`:'查無資料'}${s&&s.kdLabel?`　${s.kdLabel}`:''}</span></div>
+      <div class="result-line"><span class="rl-label">MACD（12,26,9）</span><span class="rl-val">${tech.macd?`柱狀體 ${tech.macd.histogram>=0?'+':''}${fmt(tech.macd.histogram,2)}`:'查無資料'}${s&&s.macdLabel?`　${s.macdLabel}`:''}</span></div>
+      <div class="result-line"><span class="rl-label">威廉指標 %R（14）</span><span class="rl-val">${tech.williamsR!=null?fmt(tech.williamsR):'查無資料'}${s&&s.williamsRLabel?`　${s.williamsRLabel}`:''}</span></div>
+      <div class="result-line"><span class="rl-label">ADX（14）</span><span class="rl-val">${tech.adx?`${fmt(tech.adx.adx)}（+DI ${fmt(tech.adx.plusDI)}／-DI ${fmt(tech.adx.minusDI)}）`:'查無資料'}${s&&s.adxLabel?`　${s.adxLabel}`:''}</span></div>
+    </div>
+  `;
+}
+function renderChannelsTab(){
+  const channels = state.channels;
+  const tabsHtml = channels.length ? `
+    <div class="group-tabs" style="margin-bottom:12px;">
+      ${channels.map(c=>`<button class="group-tab ${state.activeChannelId===c.id?'active':''}" onclick="selectChannel(${c.id})">${escapeAttr(c.name)}（${c.links.length}）</button>`).join('')}
+      <button class="group-tab" onclick="toggleAddChannelForm()">＋ 新增頻道</button>
+    </div>
+  ` : '';
+
+  const addChannelFormHtml = state.showAddChannelForm ? `
+    <div class="card" style="margin-bottom:12px;">
+      <div class="field-grid" style="grid-template-columns: 1fr auto;">
+        <div>
+          <label>頻道名稱</label>
+          <input type="text" id="channel-name" placeholder="例如 股癌、財報狗、某 YouTube 頻道" value="${escapeAttr(state.channelNameDraft)}" oninput="updateChannelNameDraft(this.value)"/>
+        </div>
+        <button class="btn" onclick="addChannel()">新增</button>
+      </div>
+    </div>
+  ` : '';
+
+  const searchBoxHtml = channels.length ? `
+    <div class="card" style="margin-bottom:12px;">
+      <label>搜尋摘要內容</label>
+      <input type="text" id="channel-search" placeholder="輸入關鍵字，搜尋所有頻道的標題與摘要" value="${escapeAttr(state.channelSearchQuery)}" oninput="updateChannelSearchQuery(this.value)"/>
+    </div>
+  ` : '';
+
+  // 一則連結卡片：預設收合只顯示標題＋日期＋狀態，點開才顯示完整摘要與操作按鈕
+  function renderLinkCard(ch, l){
+    const s = l.symbol ? getStock(l.symbol) : null;
+    const isEditing = state.channelLinkEditingId === l.id;
+    const expanded = state.channelLinkExpandedId === l.id || isEditing;
+    const dateStr = l.addedAt ? new Date(l.addedAt).toLocaleDateString('zh-TW') : '';
+    return `
+    <div class="card" style="margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; cursor:pointer;" onclick="toggleChannelLinkExpand(${l.id})">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; min-width:0;">
+          <span class="collapsible-arrow">${expanded?'▾':'▸'}</span>
+          <a href="${escapeAttr(l.url)}" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--text); text-decoration:none; font-size:13px;">${escapeAttr(l.title || l.url)}</a>
+          <span class="news-meta" style="margin:0;">${dateStr}</span>
+        </div>
+        <span class="tag ${l.done?'bull':'neutral'}">${l.done?'已摘要':'待摘要'}</span>
+      </div>
+      ${expanded ? `
+      <div style="margin-top:8px;">
+        ${l.symbol ? `<div class="news-meta" style="margin-bottom:6px;">關聯股票：${s?s.name:l.symbol}（${l.symbol}）</div>` : ''}
+        ${isEditing ? `
+          <textarea id="channel-link-summary-${l.id}" rows="5" style="width:100%; font-family:inherit;" placeholder="把我在對話裡幫你整理好的摘要貼在這裡" oninput="updateChannelLinkSummaryDraft(this.value)">${escapeAttr(state.channelLinkSummaryDraft)}</textarea>
+          <div style="margin-top:8px; display:flex; gap:8px;">
+            <button class="btn" onclick="saveChannelLinkSummary(${ch.id}, ${l.id})">儲存摘要</button>
+            <button class="btn-ghost" onclick="cancelEditChannelLinkSummary()">取消</button>
+          </div>
+        ` : `
+          ${l.summary ? `<p style="white-space:pre-wrap; margin:0;">${escapeAttr(l.summary)}</p>` : ''}
+          <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="btn-ghost" onclick="startEditChannelLinkSummary(${l.id}, ${escapeAttr(JSON.stringify(l.summary||''))})">${l.summary?'編輯摘要':'貼上摘要'}</button>
+            <button class="btn-ghost" onclick="editChannelLinkSymbol(${ch.id}, ${l.id})">標註股票</button>
+            ${l.summary && l.symbol ? `<button class="btn-ghost" onclick="addChannelLinkSummaryToStockNotes(${ch.id}, ${l.id})">加入個股筆記</button>` : ''}
+            <button class="alert-del" onclick="removeChannelLink(${ch.id}, ${l.id})">✕</button>
+          </div>
+        `}
+      </div>` : ''}
+    </div>`;
+  }
+
+  const query = (state.channelSearchQuery||'').trim().toLowerCase();
+  if(query){
+    const results = [];
+    channels.forEach(c=>{
+      c.links.forEach(l=>{
+        const hay = ((l.title||'') + ' ' + (l.summary||'') + ' ' + (l.url||'')).toLowerCase();
+        if(hay.includes(query)) results.push({ channel:c, link:l });
+      });
+    });
+    return `
+      <div class="panel-section">
+        <h3>頻道摘要</h3>
+        <p class="panel-hint">把連結貼給我（在對話裡）摘要後，再把文字貼回這裡存檔；有標註關聯股票的話，可以一鍵加進「個股分析」頁籤裡對應股票的產業商業模式筆記。</p>
+        ${searchBoxHtml}
+        <p class="panel-hint">「${escapeAttr(state.channelSearchQuery)}」共找到 ${results.length} 筆結果（搜尋範圍：全部頻道）</p>
+        ${results.length ? results.map(({channel,link})=>`
+          <div style="font-size:11px; color:var(--text-faint); margin:8px 0 -4px;">來自頻道：${escapeAttr(channel.name)}</div>
+          ${renderLinkCard(channel, link)}
+        `).join('') : `<div class="card"><div class="empty">沒有找到符合的內容</div></div>`}
+      </div>
+    `;
+  }
+
+  if(!channels.length){
+    return `
+      <div class="panel-section">
+        <h3>頻道摘要</h3>
+        <p class="panel-hint">先建立幾個頻道（例如 podcast、YouTube 頻道、電子報），把想追蹤的連結貼進去；這個頁籤本身不會自動抓取或摘要內容——把連結貼給我（在對話裡），我幫你摘要後，再把摘要文字貼回這裡存檔，也可以一鍵加進對應股票的「個股分析」筆記裡。</p>
+        ${addChannelFormHtml}
+        <div class="card"><div class="empty">還沒有任何頻道，點下面按鈕新增一個</div></div>
+        <button class="btn" onclick="toggleAddChannelForm()" style="margin-top:12px;">＋ 新增頻道</button>
+      </div>
+    `;
+  }
+
+  const ch = channels.find(c=>c.id===state.activeChannelId) || channels[0];
+  const d = state.channelLinkDraft;
+
+  const linksHtml = ch.links.length ? ch.links.map(l=>renderLinkCard(ch, l)).join('') : `<div class="card"><div class="empty">這個頻道還沒有任何連結</div></div>`;
+
+  return `
+    <div class="panel-section">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">頻道摘要</h3>
+        <button class="btn-ghost" onclick="removeChannel(${ch.id})">刪除「${escapeAttr(ch.name)}」頻道</button>
+      </div>
+      <p class="panel-hint">把連結貼給我（在對話裡）摘要後，再把文字貼回這裡存檔；有標註關聯股票的話，可以一鍵加進「個股分析」頁籤裡對應股票的產業商業模式筆記。</p>
+      ${searchBoxHtml}
+      ${tabsHtml}
+      ${addChannelFormHtml}
+      <div class="card" style="margin-bottom:12px;">
+        <div class="field-grid">
+          <div>
+            <label>連結網址</label>
+            <input type="text" id="channel-link-url" placeholder="https://..." value="${escapeAttr(d.url)}" oninput="updateChannelLinkDraft('url', this.value)"/>
+          </div>
+          <div>
+            <label>標題（選填）</label>
+            <input type="text" id="channel-link-title" placeholder="例如 EP694 逐字稿" value="${escapeAttr(d.title)}" oninput="updateChannelLinkDraft('title', this.value)"/>
+          </div>
+          <div>
+            <label>關聯股票（選填）</label>
+            <input type="text" id="channel-link-symbol" placeholder="例如 2330 或 台積電" value="${escapeAttr(d.symbolInput)}" oninput="updateChannelLinkDraft('symbolInput', this.value)"/>
+          </div>
+        </div>
+        <button class="btn" style="margin-top:12px;" onclick="addChannelLink()">加入連結</button>
+      </div>
+      ${linksHtml}
+    </div>
   `;
 }
 function renderNewsTab(sel){
@@ -2632,10 +2899,10 @@ function renderTransactionsTab(sel){
             <label>日期</label>
             <input type="date" id="tx-date" value="${draft.date}" onchange="updateTxDraft('date', this.value)"/>
           </div>
-          <div>
+          <div style="position:relative;">
             <label>股票（代號或名稱）</label>
             <input type="text" id="tx-symbol" value="${escapeAttr(draft.symbolInput)}" placeholder="例如 2330 或 台積電" oninput="updateTxDraft('symbolInput', this.value)"/>
-            <div id="tx-symbol-preview" style="font-size:11px; margin-top:3px; min-height:14px;">${previewSymbolMatch(draft.symbolInput)}</div>
+            <div id="tx-symbol-preview" style="font-size:11px; margin-top:3px; min-height:14px; position:absolute; top:100%; left:0; right:0;">${previewSymbolMatch(draft.symbolInput)}</div>
           </div>
           <div>
             <label>帳戶（選填）</label>
@@ -2857,10 +3124,10 @@ function renderImportHoldingsSection(){
             <label>起始持有日期（選填）</label>
             <input type="date" id="import-date" value="${escapeAttr(d.date)}" onchange="updateImportDraft('date', this.value)"/>
           </div>
-          <div>
+          <div style="position:relative;">
             <label>股票（代號或名稱）</label>
             <input type="text" id="import-symbol" placeholder="例如 2330 或 台積電" value="${escapeAttr(d.symbolInput)}" oninput="updateImportDraft('symbolInput', this.value)"/>
-            <div id="import-symbol-preview" style="font-size:11px; margin-top:3px; min-height:14px;">${previewSymbolMatch(d.symbolInput)}</div>
+            <div id="import-symbol-preview" style="font-size:11px; margin-top:3px; min-height:14px; position:absolute; top:100%; left:0; right:0;">${previewSymbolMatch(d.symbolInput)}</div>
           </div>
           <div>
             <label>目前股數</label>
