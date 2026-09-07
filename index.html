@@ -169,7 +169,7 @@
     padding:4px 9px; font-size:11px; color:var(--text-dim); display:flex; gap:6px; align-items:center;
   }
   .chip b{ color:var(--text); font-weight:600; }
-  .spark-wrap{ min-width:180px; }
+  .spark-wrap{ min-width:248px; }
   .spark-wrap .spark-label{ font-size:11px; color:var(--text-faint); margin-bottom:4px; text-align:right; }
 
   /* ===== Tabs ===== */
@@ -279,16 +279,16 @@
 <script>
 /* ================= 資料模型 ================= */
 const STOCK_POOL = [
-  { symbol:'2330', name:'台積電',     price:988.0,  prevClose:975.0,  earnings:'07/17', foreign: 12450 },
-  { symbol:'2317', name:'鴻海',       price:203.5,  prevClose:205.0,  earnings:'08/13', foreign: -3210 },
-  { symbol:'2454', name:'聯發科',     price:1265.0, prevClose:1250.0, earnings:'07/30', foreign: 890 },
-  { symbol:'0050', name:'元大台灣50', price:192.3,  prevClose:191.8,  earnings:'—',      foreign: 5600 },
-  { symbol:'2603', name:'長榮',       price:198.0,  prevClose:203.0,  earnings:'08/07', foreign: -8940 },
-  { symbol:'2881', name:'富邦金',     price:96.4,   prevClose:95.9,   earnings:'08/11', foreign: 2130 },
-  { symbol:'3711', name:'日月光投控', price:168.0,  prevClose:170.5,  earnings:'07/25', foreign: -1560 },
-  { symbol:'2412', name:'中華電',     price:126.0,  prevClose:125.5,  earnings:'08/14', foreign: 780 },
-  { symbol:'2308', name:'台達電',     price:412.5,  prevClose:405.0,  earnings:'07/29', foreign: 4020 },
-  { symbol:'6505', name:'台塑化',     price:74.2,   prevClose:74.8,   earnings:'08/12', foreign: -600 },
+  { symbol:'2330', name:'台積電',     price:988.0,  prevClose:975.0,  foreign: 12450 },
+  { symbol:'2317', name:'鴻海',       price:203.5,  prevClose:205.0,  foreign: -3210 },
+  { symbol:'2454', name:'聯發科',     price:1265.0, prevClose:1250.0, foreign: 890 },
+  { symbol:'0050', name:'元大台灣50', price:192.3,  prevClose:191.8,  foreign: 5600 },
+  { symbol:'2603', name:'長榮',       price:198.0,  prevClose:203.0,  foreign: -8940 },
+  { symbol:'2881', name:'富邦金',     price:96.4,   prevClose:95.9,   foreign: 2130 },
+  { symbol:'3711', name:'日月光投控', price:168.0,  prevClose:170.5,  foreign: -1560 },
+  { symbol:'2412', name:'中華電',     price:126.0,  prevClose:125.5,  foreign: 780 },
+  { symbol:'2308', name:'台達電',     price:412.5,  prevClose:405.0,  foreign: 4020 },
+  { symbol:'6505', name:'台塑化',     price:74.2,   prevClose:74.8,   foreign: -600 },
 ];
 
 const NEWS_BANK = {
@@ -576,7 +576,7 @@ function ensureStockTracked(symbol, customName, customPrice, customPrevClose, cu
     const history = (Array.isArray(customSeries) && customSeries.length) ? customSeries : seedHistory(customPrice);
     state.stocks.push({
       symbol, name: customName || symbol, price: customPrice, prevClose,
-      earnings:'—', foreign:0, history,
+      foreign:0, history,
     });
     return true;
   }
@@ -698,29 +698,16 @@ async function fetchForeignNetBuy(symbol){
   if(json && json.status && json.status !== 200 && json.status !== '200'){
     throw new Error(json.msg || ('狀態碼 ' + json.status));
   }
-  const rows = (json.data || []).filter(r => (r.name||'').toLowerCase().includes('foreign'));
+  // 注意：FinMind 的類別名稱裡 Foreign_Investor（外資本身）跟 Foreign_Dealer_Self（外資自營商，完全不同的東西）
+  // 都含有「foreign」這個字，一定要精準比對成 Foreign_Investor，不能用模糊的字串包含比對，否則會混到不該加總的數字
+  const rows = (json.data || []).filter(r => r.name === 'Foreign_Investor');
   if(!rows.length) return null;
   rows.sort((a,b)=> String(a.date).localeCompare(String(b.date)));
   const last = rows[rows.length-1];
-  const buy = Number(last.buy ?? last.Buy ?? 0);
-  const sell = Number(last.sell ?? last.Sell ?? 0);
+  const buy = Number(last.buy ?? 0);
+  const sell = Number(last.sell ?? 0);
   if(Number.isNaN(buy) || Number.isNaN(sell)) return null;
   return Math.round((buy - sell) / 1000); // 換算成「張」（1 張 = 1000 股），跟畫面上原本的單位一致
-}
-// 下次財報日：沒有任何免費資料源會直接告訴你「下一次公告日期」，這是用台灣法規規定的申報截止期限
-// 反推估算出來的（不是公司實際會公告的日期，通常會提早，僅供參考）：
-// Q1 財報 5/15 前、半年報 8/14 前、Q3 財報 11/14 前、年報（前一年度）3/31 前。
-function estimateNextEarningsDate(){
-  const now = new Date();
-  const y = now.getFullYear();
-  const deadlines = [
-    new Date(y, 2, 31),   // 3/31 前一年度年報
-    new Date(y, 4, 15),   // 5/15 第一季
-    new Date(y, 7, 14),   // 8/14 半年報
-    new Date(y, 10, 14),  // 11/14 第三季
-  ];
-  const next = deadlines.find(d => d >= now) || new Date(y+1, 2, 31);
-  return (next.getMonth()+1) + '/' + String(next.getDate()).padStart(2,'0') + '（估）';
 }
 
 /* ================= 個股分析：財務基本面／估值技術面／籌碼資金動向／新聞（皆串接 FinMind 真實資料） =================
@@ -1204,7 +1191,6 @@ async function refreshStockPrice(stock){
       const foreignNet = await fetchForeignNetBuy(stock.symbol);
       if(foreignNet !== null) stock.foreign = foreignNet;
     } catch(e){ /* 法人資料查不到就維持原值，不影響股價更新結果 */ }
-    stock.earnings = estimateNextEarningsDate();
     return true;
   } catch(err){
     return false;
@@ -1234,15 +1220,30 @@ function getStock(sym){ return state.stocks.find(s=>s.symbol===sym); }
 function chgColorClass(v){ return v >= 0 ? 'up-color' : 'down-color'; }
 function chgSign(v){ return v >= 0 ? '▲' : '▼'; }
 
-function sparkSVG(history, w=170, h=44){
+function sparkSVG(history, w=240, h=70){
+  if(!history || history.length<2) return `<svg width="${w}" height="${h}"></svg>`;
   const min = Math.min(...history), max = Math.max(...history);
   const range = (max-min) || 1;
+  const pad = 4; // 上下留一點邊界，避免線貼著頂部/底部被裁到
+  const innerH = h - pad*2;
   const step = w/(history.length-1);
-  const pts = history.map((v,i)=> `${(i*step).toFixed(1)},${(h - ((v-min)/range)*h).toFixed(1)}`).join(' ');
+  const yOf = v => pad + (innerH - ((v-min)/range)*innerH);
+  const pts = history.map((v,i)=> `${(i*step).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
   const up = history[history.length-1] >= history[0];
   const color = up ? 'var(--up)' : 'var(--down)';
+  const baselineY = yOf(history[0]).toFixed(1);
+  const areaPts = `0,${h} ${pts} ${w},${h}`;
+  const gridLines = [0.25, 0.5, 0.75].map(f=>{
+    const y = (h*f).toFixed(1);
+    return `<line x1="0" y1="${y}" x2="${w}" y2="${y}" stroke="var(--border)" stroke-width="1" stroke-dasharray="2,3"/>`;
+  }).join('');
   return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
-    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+    ${gridLines}
+    <line x1="0" y1="${baselineY}" x2="${w}" y2="${baselineY}" stroke="var(--text-faint)" stroke-width="1" stroke-dasharray="3,3"/>
+    <polygon points="${areaPts}" fill="${color}" opacity="0.12"/>
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <text x="2" y="12" font-size="10" fill="var(--text-faint)">${fmt(max)}</text>
+    <text x="2" y="${h-4}" font-size="10" fill="var(--text-faint)">${fmt(min)}</text>
   </svg>`;
 }
 
@@ -2008,7 +2009,7 @@ function persistState(){
    使用者名稱也建議取不容易被猜到的。
    自動同步刻意節流：本機每次修改都會馬上存到瀏覽器裡，但雲端（Apps Script／Google 試算表）
    最多一小時自動推送一次，避免把額度浪費在頻繁的背景存檔上；真的想馬上同步，用「立即同步」按鈕。 */
-const SYNC_MIN_INTERVAL_MS = 60 * 60 * 1000; // 自動同步的最短間隔：1 小時
+const SYNC_MIN_INTERVAL_MS = 15 * 60 * 1000; // 自動同步的最短間隔：15 分鐘
 let lastEncryptedForUnload = null;
 function updateSyncUrlDraft(value){ state.loginDraft.syncUrl = value; }
 function maybeSyncPush(encrypted){
@@ -2051,6 +2052,27 @@ function flushSyncOnUnload(){
     const blob = new Blob([body], { type:'text/plain;charset=utf-8' });
     navigator.sendBeacon(state.sync.url, blob);
   } catch(e){ /* 盡力就好，離開頁面時失敗也沒辦法再處理 */ }
+}
+
+/* ================= 跨裝置自動同步 =================
+   光是「登入時拉一次、存檔時推一次」還不夠支援跨裝置：如果 A 裝置改了東西，B 裝置已經登入著、
+   沒有重新登入或手動按同步，B 永遠不會自動發現 A 的更新。這裡加一個背景計時器，
+   只要有登入、有設定同步網址，就定期主動去雲端檢查有沒有更新的資料，自動拉下來合併。
+   使用者正在某個輸入框打字時會先跳過這一輪，避免打斷輸入，下一輪再檢查。 */
+let autoPullTimer = null;
+async function autoPullCheck(){
+  if(!state.session.loggedIn || !state.sync.url) return;
+  if(state.sync.status === 'syncing') return; // 已經有一個同步在進行中，避免重疊
+  const active = document.activeElement;
+  if(active && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName)) return; // 使用者正在輸入，這輪先跳過
+  await syncPullAndMerge(lastLocalSavedAt);
+}
+function startAutoPull(){
+  if(autoPullTimer) clearInterval(autoPullTimer);
+  autoPullTimer = setInterval(autoPullCheck, SYNC_MIN_INTERVAL_MS);
+}
+function stopAutoPull(){
+  if(autoPullTimer){ clearInterval(autoPullTimer); autoPullTimer = null; }
 }
 
 // 登入成功後呼叫：向雲端拉一次資料，跟本機資料比對時間戳記，較新的一份為準
@@ -2096,6 +2118,7 @@ async function syncPullAndMerge(localSavedAt){
 function updateSyncUrlSetting(value){
   state.sync.url = value.trim();
   try{ localStorage.setItem(SYNC_URL_KEY, state.sync.url); }catch(e){ /* 忽略 */ }
+  if(state.sync.url) startAutoPull(); else stopAutoPull();
 }
 async function manualSyncNow(){
   if(!state.sync.url){ alert('請先在下方填入雲端同步網址'); return; }
@@ -2115,7 +2138,7 @@ function applyPersistedData(data){
       if(base) return { ...base, history: seedHistory(base.price) };
       const snap = snapshotMap[sym];
       const price = (snap && snap.price>0) ? snap.price : 1;
-      return { symbol:sym, name:(snap && snap.name) || sym, price, prevClose:price, earnings:'—', foreign:0, history: seedHistory(price) };
+      return { symbol:sym, name:(snap && snap.name) || sym, price, prevClose:price, foreign:0, history: seedHistory(price) };
     });
     state.poolLeft = STOCK_POOL.filter(s=> !data.watchSymbols.includes(s.symbol));
   }
@@ -2168,6 +2191,7 @@ function resetStateForNewUser(){
   state.twseError = null;
   twseSourceFailed = false;
   if(twsePollTimer){ clearInterval(twsePollTimer); twsePollTimer = null; }
+  stopAutoPull();
   state.selected = STOCK_POOL[0].symbol;
   state.activeTab = 'tx';
   state.transactions = [];
@@ -2261,6 +2285,7 @@ function attemptLogin(){
     state.sync.url = syncUrl;
     try{ localStorage.setItem(SYNC_URL_KEY, syncUrl); }catch(e){ /* 忽略 */ }
     syncPullAndMerge(localSavedAt);
+    startAutoPull(); // 開始定期背景檢查雲端有沒有其他裝置的更新
   } else {
     render();
   }
@@ -2285,6 +2310,7 @@ function clearPersistedState(){
   persistState(); // 立刻覆寫成空白（也會同步推上雲端，如果有設定同步網址的話）
   render();
   refreshAllPrices().then(startTWSEPolling); // 清空後這裡也會停掉輪詢，重新啟動一次
+  if(state.sync.url) startAutoPull(); // 同樣道理，清空資料時會連帶停掉背景同步檢查，這裡重新啟動
 }
 
 function loginScreenHtml(){
@@ -2405,7 +2431,6 @@ function renderMain(sel){
           <div class="chips">
             <span class="chip">昨收 <b class="mono">${fmt(sel.prevClose)}</b></span>
             <span class="chip">外資買賣超 <b class="mono ${sel.foreign>=0?'up-color':'down-color'}">${sel.foreign>=0?'+':''}${fmt(sel.foreign,0)}張</b></span>
-            <span class="chip" title="依台灣法規規定的財報申報截止期限反推估算，不是公司實際會公告的日期，通常公司會提早公告">下次財報 <b>${sel.earnings}</b></span>
           </div>
         </div>
         <div class="spark-wrap">
@@ -2958,7 +2983,7 @@ function renderTransactionsTab(sel){
           <button class="btn-ghost" onclick="manualSyncNow()">立即同步</button>
         </div>
       </div>
-      <p class="panel-hint">本機每次修改都會馬上存檔，但雲端最多<b>每小時自動同步一次</b>（另外會在關閉分頁前補推一次），避免浪費 Apps Script 的使用額度；想立刻同步可以按上面的「立即同步」。</p>
+      <p class="panel-hint">本機每次修改都會馬上存檔，雲端最多<b>每 15 分鐘自動同步一次</b>（推送＋主動檢查是否有其他裝置的更新都算在內，另外會在關閉分頁前補推一次）；想立刻同步可以按上面的「立即同步」。<br/><b>跨裝置使用請注意：</b>這組同步網址是存在「這台瀏覽器」裡的設定，換一台裝置登入同一組帳號密碼，並不會自動帶過去——請把同一段網址也貼到新裝置的這個欄位，兩邊設定成一樣，才會真的同步在一起；如果只有一邊有設定，那一邊的改動不會出現在另一邊。</p>
       <div class="collapsible-head" onclick="toggleSyncUrlSettings()">
         <span style="font-size:12px; color:var(--text-dim); font-weight:600;">同步網址設定</span>
         <span class="collapsible-arrow">${state.syncUrlSettingsCollapsed ? '▸' : '▾'}</span>
