@@ -43,16 +43,17 @@
     display:flex; align-items:center; justify-content:space-between;
     padding:14px 20px; border-bottom:1px solid var(--border);
     background:linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
+    flex-wrap:wrap; row-gap:10px;
   }
-  .brand{ display:flex; align-items:baseline; gap:10px; }
+  .brand{ display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
   .brand-mark{
     width:8px;height:8px;border-radius:1px;background:var(--accent);
     display:inline-block; transform: rotate(45deg);
   }
-  .brand h1{ font-size:16px; font-weight:700; margin:0; letter-spacing:0.5px; }
-  .brand span.sub{ color:var(--text-faint); font-size:12px; }
-  .topbar-right{ display:flex; align-items:center; gap:16px; }
-  .clock{ color:var(--text-dim); font-size:12px; }
+  .brand h1{ font-size:16px; font-weight:700; margin:0; letter-spacing:0.5px; white-space:nowrap; }
+  .brand span.sub{ color:var(--text-faint); font-size:12px; white-space:nowrap; }
+  .topbar-right{ display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .clock{ color:var(--text-dim); font-size:12px; white-space:nowrap; }
   .refresh-btn{
     background:var(--surface-2); border:1px solid var(--border); color:var(--text);
     padding:6px 12px; border-radius:var(--radius); font-size:12px; cursor:pointer;
@@ -76,6 +77,11 @@
   }
   @media (max-width: 860px){
     .body-grid{ grid-template-columns: 1fr; }
+  }
+  @media (max-width: 480px){
+    .topbar{ padding:12px 14px; }
+    .topbar-right{ gap:8px 10px; width:100%; }
+    .clock{ font-size:11px; }
   }
 
   /* ===== Watchlist ===== */
@@ -1961,14 +1967,14 @@ function schedulePersist(){
   if(persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(persistState, 300);
 }
+let lastPersistedContentJSON = null; // 上次真的存檔時的內容（不含 savedAt），用來判斷這次呼叫是不是「真的有東西變了」
 function persistState(){
   if(!state.session.loggedIn || !sessionPassword) return;
   try{
     const data = {
       version: 1,
-      savedAt: new Date().toISOString(),
       watchSymbols: state.stocks.map(s=>s.symbol),
-      watchStocks: state.stocks.map(s=>({ symbol:s.symbol, name:s.name, price:s.price })), // 供自訂股票（不在內建股票池）還原時使用
+      watchStocks: state.stocks.map(s=>({ symbol:s.symbol, name:s.name })), // 供自訂股票（不在內建股票池）還原時使用；刻意不存 price——那是即時報價會一直跳動，存進來會讓「有沒有真的改動」的判斷失真，見下方說明
       watchGroups: state.watchGroups,
       activeGroupId: state.activeGroupId,
       nextGroupId: state.nextGroupId,
@@ -1991,11 +1997,21 @@ function persistState(){
       sheetImportUrl: state.sheetImport.url,
       plSheetImportUrl: state.plSheetImport.url,
     };
-    const encrypted = encryptForStorage(JSON.stringify(data), sessionPassword);
+    // 關鍵修正：savedAt 以前是「每次呼叫 persistState 就重蓋成現在時間」，但這個函式其實會被非常頻繁地觸發
+    // （例如盤中每 5 秒的報價輪詢，只要畫面重繪就會排程呼叫一次），導致 savedAt 幾乎隨時都是「剛剛」，
+    // 完全反映不出「使用者真的動了資料」這件事。這會讓跨瀏覽器／跨裝置同步的「比對時間戳記、較新的為準」
+    // 這套邏輯直接失效：兩邊都覺得自己最新，誰也不肯接受對方真正的修改。
+    // 修法：只有在這次要存的內容跟上次真的存進去的內容不同時，才真的存檔、才真的蓋新的 savedAt、才會觸發同步；
+    // 純粹因為報價更新觸發的重繪，內容跟上次一樣，直接跳過，不留下任何痕跡。
+    const contentJSON = JSON.stringify(data);
+    if(contentJSON === lastPersistedContentJSON) return;
+    lastPersistedContentJSON = contentJSON;
+    const fullData = { ...data, savedAt: new Date().toISOString() };
+    const encrypted = encryptForStorage(JSON.stringify(fullData), sessionPassword);
     localStorage.setItem(userStorageKey(state.session.username), encrypted);
-    lastSaveStatus = { ok:true, at:data.savedAt };
+    lastSaveStatus = { ok:true, at:fullData.savedAt };
     lastEncryptedForUnload = encrypted; // 供關閉分頁前的最後一次同步使用
-    lastLocalSavedAt = data.savedAt;
+    lastLocalSavedAt = fullData.savedAt;
     maybeSyncPush(encrypted);
   } catch(err){
     lastSaveStatus = { ok:false, at:new Date().toISOString(), message:(err&&err.message)||'瀏覽器拒絕寫入本機儲存' };
@@ -2175,6 +2191,7 @@ function applyPersistedData(data){
   if(!getStock(state.selected)) state.selected = state.stocks[0]?.symbol;
 }
 function resetStateForNewUser(){
+  lastPersistedContentJSON = null; // 換帳號／重置時清掉，避免誤判成「內容沒變」而漏存
   state.stocks = STOCK_POOL.slice(0,5).map(s=>({ ...s, history: seedHistory(s.price) }));
   state.poolLeft = STOCK_POOL.slice(5);
   state.watchGroups = [{ id:'g1', name:'全部', symbols: STOCK_POOL.slice(0,5).map(s=>s.symbol) }];
