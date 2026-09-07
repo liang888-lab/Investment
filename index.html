@@ -1195,10 +1195,14 @@ async function refreshStockPrice(stock){
     stock.price = result.price;
     stock.prevClose = result.prevClose;
     if(Array.isArray(result.series) && result.series.length) stock.history = result.series;
-    try{
-      const foreignNet = await fetchForeignNetBuy(stock.symbol);
-      if(foreignNet !== null) stock.foreign = foreignNet;
-    } catch(e){ /* 法人資料查不到就維持原值，不影響股價更新結果 */ }
+    // 外資買賣超是每天收盤後才更新一次的資料，不是即時的，同一天重複抓沒有意義，只會浪費額度
+    const today = new Date().toISOString().slice(0,10);
+    if(stock.foreignFetchedDate !== today){
+      try{
+        const foreignNet = await fetchForeignNetBuy(stock.symbol);
+        if(foreignNet !== null){ stock.foreign = foreignNet; stock.foreignFetchedDate = today; }
+      } catch(e){ /* 法人資料查不到就維持原值，不影響股價更新結果 */ }
+    }
     return { ok:true };
   } catch(err){
     return { ok:false, quotaExceeded: !!(err && err.quotaExceeded), message: (err && err.message) || '未知錯誤' };
@@ -1988,7 +1992,7 @@ function persistState(){
     const data = {
       version: 1,
       watchSymbols: state.stocks.map(s=>s.symbol),
-      watchStocks: state.stocks.map(s=>({ symbol:s.symbol, name:s.name })), // 供自訂股票（不在內建股票池）還原時使用；刻意不存 price——那是即時報價會一直跳動，存進來會讓「有沒有真的改動」的判斷失真，見下方說明
+      watchStocks: state.stocks.map(s=>({ symbol:s.symbol, name:s.name, foreignFetchedDate:s.foreignFetchedDate })), // 供自訂股票（不在內建股票池）還原時使用；刻意不存 price——那是即時報價會一直跳動，存進來會讓「有沒有真的改動」的判斷失真，見下方說明；foreignFetchedDate 是「外資買賣超今天抓過了沒」的記錄，讓重新整理網頁後不會又整批重抓一次
       watchGroups: state.watchGroups,
       activeGroupId: state.activeGroupId,
       nextGroupId: state.nextGroupId,
@@ -2164,11 +2168,11 @@ function applyPersistedData(data){
     const snapshotMap = {};
     if(Array.isArray(data.watchStocks)) data.watchStocks.forEach(s=>{ snapshotMap[s.symbol] = s; });
     state.stocks = data.watchSymbols.map(sym=>{
-      const base = STOCK_POOL.find(s=>s.symbol===sym);
-      if(base) return { ...base, history: seedHistory(base.price) };
       const snap = snapshotMap[sym];
+      const base = STOCK_POOL.find(s=>s.symbol===sym);
+      if(base) return { ...base, foreignFetchedDate: snap && snap.foreignFetchedDate, history: seedHistory(base.price) };
       const price = (snap && snap.price>0) ? snap.price : 1;
-      return { symbol:sym, name:(snap && snap.name) || sym, price, prevClose:price, foreign:0, history: seedHistory(price) };
+      return { symbol:sym, name:(snap && snap.name) || sym, price, prevClose:price, foreign:0, foreignFetchedDate: snap && snap.foreignFetchedDate, history: seedHistory(price) };
     });
     state.poolLeft = STOCK_POOL.filter(s=> !data.watchSymbols.includes(s.symbol));
   }
@@ -3568,7 +3572,15 @@ async function manualRefreshPrices(){
   twseSourceFailed = false;
   await pollTWSEPrices();
   if(state.twseStatus === 'error' || state.twseStatus === 'closed'){
-    // TWSE 沒有更新到資料（失敗，或現在非交易時段），退回抓 FinMind 的最近收盤價，至少確保資料是最新的
+    // 非交易時段或 TWSE 失敗，才會退回抓 FinMind——這條路徑比較貴（每檔股票都要額外呼叫 FinMind），
+    // 收盤價同一天不會變，短時間內重複點意義不大，先跟使用者確認一下，避免不小心浪費額度
+    if(state.lastPriceRefreshAt && !state.lastPriceRefreshQuotaExceeded){
+      const ageMs = Date.now() - new Date(state.lastPriceRefreshAt).getTime();
+      if(ageMs < 5*60*1000){
+        const ageSec = Math.round(ageMs/1000);
+        if(!confirm(`${ageSec} 秒前才剛用 FinMind 更新過收盤價，非交易時段這份資料通常不會變。確定要再花一次額度重新抓取嗎？`)) return;
+      }
+    }
     await refreshAllPrices();
   }
 }
