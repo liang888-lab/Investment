@@ -350,6 +350,8 @@ const state = {
   priceRefreshing: false,
   lastPriceRefreshAt: null,
   lastPriceRefreshFailCount: 0,
+  lastPriceRefreshQuotaExceeded: false,
+  lastPriceRefreshRemaining: 0,
   twseStatus: 'idle', // idle|ok|closed|error
   twseError: null,
   selected: STOCK_POOL[0].symbol,
@@ -1189,7 +1191,7 @@ async function checkFinmindQuota(){
 async function refreshStockPrice(stock){
   try{
     const result = await fetchFinMindPrice(stock.symbol);
-    if(!result) return false;
+    if(!result) return { ok:false };
     stock.price = result.price;
     stock.prevClose = result.prevClose;
     if(Array.isArray(result.series) && result.series.length) stock.history = result.series;
@@ -1197,9 +1199,9 @@ async function refreshStockPrice(stock){
       const foreignNet = await fetchForeignNetBuy(stock.symbol);
       if(foreignNet !== null) stock.foreign = foreignNet;
     } catch(e){ /* 法人資料查不到就維持原值，不影響股價更新結果 */ }
-    return true;
+    return { ok:true };
   } catch(err){
-    return false;
+    return { ok:false, quotaExceeded: !!(err && err.quotaExceeded), message: (err && err.message) || '未知錯誤' };
   }
 }
 // 全部觀察中的股票依序更新（刻意不用 Promise.all 平行送出，避免短時間內對 FinMind 送出太多同時請求）
@@ -1208,13 +1210,25 @@ async function refreshAllPrices(){
   state.priceRefreshing = true;
   renderUnlessTyping();
   let failCount = 0;
+  let updatedCount = 0;
+  let quotaExceeded = false;
   for(const s of state.stocks){
-    const ok = await refreshStockPrice(s);
-    if(!ok) failCount++;
+    const result = await refreshStockPrice(s);
+    if(result.ok){
+      updatedCount++;
+    } else {
+      failCount++;
+      if(result.quotaExceeded){
+        quotaExceeded = true;
+        break; // 額度已經用完，後面繼續打也一定失敗，直接停止，不要浪費時間對一個已經拒絕服務的來源繼續嘗試
+      }
+    }
   }
   state.priceRefreshing = false;
   state.lastPriceRefreshAt = new Date().toISOString();
   state.lastPriceRefreshFailCount = failCount;
+  state.lastPriceRefreshQuotaExceeded = quotaExceeded;
+  state.lastPriceRefreshRemaining = state.stocks.length - updatedCount;
   checkAlertNotifications();
   renderUnlessTyping();
 }
@@ -1895,9 +1909,9 @@ function render(){
           <span class="clock mono ${state.twseStatus==='error'?'down-color':(state.twseStatus==='ok'?'up-color':'')}" title="${state.twseStatus==='ok' ? '即時報價來源：台灣證交所（交易時段內每 5 秒更新一次）' : state.twseStatus==='closed' ? '現在非交易時段（平日 09:00–13:30），暫停即時輪詢，畫面顯示的是最近收盤價' : state.twseStatus==='error' ? ('證交所即時報價連線失敗：'+escapeAttr(state.twseError||'')+'，已改用 FinMind 最近收盤價') : '尚未開始'}">
             ${state.twseStatus==='ok' ? '即時報價中（每 5 秒）' : state.twseStatus==='closed' ? '非交易時段' : state.twseStatus==='error' ? '即時報價失敗，改用收盤價' : ''}
           </span>
-          <span class="clock mono" title="股價更新時間">
+          <span class="clock mono ${state.lastPriceRefreshQuotaExceeded?'down-color':''}" title="${state.lastPriceRefreshQuotaExceeded ? 'FinMind 免費額度是每小時 300 次（有填 Token 是 600 次），用完後約 1 小時會自動重置；也可以去「配息」頁籤填入 Token 提高上限，或按「查詢目前額度使用量」確認實際用量' : ''}">
             ${state.lastPriceRefreshAt ? '資料更新於 ' + new Date(state.lastPriceRefreshAt).toLocaleString('zh-TW',{hour12:false}) : '尚未抓取股價'}
-            ${state.lastPriceRefreshFailCount ? `（${state.lastPriceRefreshFailCount} 檔收盤價抓取失敗）` : ''}
+            ${state.lastPriceRefreshQuotaExceeded ? `（FinMind 額度已用完，剩下 ${state.lastPriceRefreshRemaining} 檔沒更新到，請稍後再試）` : state.lastPriceRefreshFailCount ? `（${state.lastPriceRefreshFailCount} 檔收盤價抓取失敗）` : ''}
           </span>
           <span class="clock mono" title="${lastSaveStatus && lastSaveStatus.ok ? '已加密存到這台瀏覽器，重新整理或關閉分頁後，用同樣的帳密登入即可取回' : (lastSaveStatus ? '儲存失敗：'+lastSaveStatus.message : '')}">
             ${lastSaveStatus ? (lastSaveStatus.ok ? '已自動存檔 ' + new Date(lastSaveStatus.at).toLocaleTimeString('zh-TW',{hour12:false}) : '存檔失敗') : ''}
@@ -2204,6 +2218,8 @@ function resetStateForNewUser(){
   state.priceRefreshing = false;
   state.lastPriceRefreshAt = null;
   state.lastPriceRefreshFailCount = 0;
+  state.lastPriceRefreshQuotaExceeded = false;
+  state.lastPriceRefreshRemaining = 0;
   state.twseStatus = 'idle';
   state.twseError = null;
   twseSourceFailed = false;
@@ -3565,10 +3581,16 @@ async function fetchFinMindPrice(symbol){
   const headers = {};
   if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
   const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
-  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  if(!resp.ok){
+    const err = new Error('HTTP ' + resp.status);
+    if(resp.status === 402) err.quotaExceeded = true; // FinMind 額度用完時回傳 402
+    throw err;
+  }
   const json = await resp.json();
   if(json && json.status && json.status !== 200 && json.status !== '200'){
-    throw new Error(json.msg || ('狀態碼 ' + json.status));
+    const err = new Error(json.msg || ('狀態碼 ' + json.status));
+    if(json.status === 402 || json.status === '402') err.quotaExceeded = true;
+    throw err;
   }
   const rows = (json.data || []).slice().sort((a,b)=> String(a.date).localeCompare(String(b.date)));
   if(!rows.length) return null;
