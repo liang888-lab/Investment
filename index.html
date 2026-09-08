@@ -209,7 +209,7 @@
   @media (max-width:640px){ .grid-2{ grid-template-columns:1fr; } }
 
   label{ display:block; font-size:11px; color:var(--text-dim); margin-bottom:4px; }
-  input[type=number], input[type=text], input[type=date], select{
+  input[type=number], input[type=text], input[type=date], input[type=password], select{
     width:100%; background:var(--surface-2); border:1px solid var(--border); color:var(--text);
     padding:8px 9px; border-radius:var(--radius); font-family:'IBM Plex Mono',monospace; font-size:13px;
   }
@@ -2266,7 +2266,7 @@ function applyPersistedData(data){
   }
   if(typeof data.nextGroupId === 'number') state.nextGroupId = data.nextGroupId;
   if(typeof data.selected === 'string') state.selected = data.selected;
-  if(typeof data.activeTab === 'string') state.activeTab = data.activeTab;
+  if(typeof data.activeTab === 'string') state.activeTab = data.activeTab === 'alerts' ? 'avg' : data.activeTab; // 「價格警示」已併入「攤平計算」，舊資料如果停在那個分頁就導回攤平計算
   if(Array.isArray(data.transactions)) state.transactions = data.transactions;
   if(typeof data.nextTransactionId === 'number') state.nextTransactionId = data.nextTransactionId;
   if(data.feeSettings && typeof data.feeSettings === 'object') state.feeSettings = { ...state.feeSettings, ...data.feeSettings };
@@ -2534,13 +2534,12 @@ function renderMain(sel){
 
   const tabs = [
     ['tx','交易紀錄'],
+    ['portfolio','持股總覽'],
     ['avg','攤平計算'],
-    ['dividend','配息'],
     ['news','個股分析'],
     ['channels','頻道摘要'],
-    ['alerts','價格警示'],
-    ['portfolio','持股總覽'],
     ['pl','損益統計'],
+    ['dividend','股票配息'],
   ];
 
   return `
@@ -2576,7 +2575,6 @@ function renderMain(sel){
         ${state.activeTab==='dividend' ? renderDividendTab() : ''}
         ${state.activeTab==='news' ? renderNewsTab(sel) : ''}
         ${state.activeTab==='channels' ? renderChannelsTab() : ''}
-        ${state.activeTab==='alerts' ? renderAlertsTab(sel) : ''}
         ${state.activeTab==='portfolio' ? renderPortfolioTab() : ''}
         ${state.activeTab==='pl' ? renderPLSummaryTab() : ''}
       </div>
@@ -2625,6 +2623,8 @@ function renderAvgTab(sel){
         </div>
       </div>
     </div>
+
+    ${renderAlertsTab(sel)}
   `;
 }
 
