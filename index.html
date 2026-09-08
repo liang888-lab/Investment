@@ -351,6 +351,7 @@ const state = {
   lastPriceRefreshAt: null,
   lastPriceRefreshFailCount: 0,
   lastPriceRefreshQuotaExceeded: false,
+  lastPriceRefreshIpBanned: false,
   lastPriceRefreshRemaining: 0,
   twseStatus: 'idle', // idle|ok|closed|error
   twseError: null,
@@ -1205,7 +1206,7 @@ async function refreshStockPrice(stock){
     }
     return { ok:true };
   } catch(err){
-    return { ok:false, quotaExceeded: !!(err && err.quotaExceeded), message: (err && err.message) || '未知錯誤' };
+    return { ok:false, quotaExceeded: !!(err && err.quotaExceeded), ipBanned: !!(err && err.ipBanned), message: (err && err.message) || '未知錯誤' };
   }
 }
 // 全部觀察中的股票依序更新（刻意不用 Promise.all 平行送出，避免短時間內對 FinMind 送出太多同時請求）
@@ -1216,15 +1217,17 @@ async function refreshAllPrices(){
   let failCount = 0;
   let updatedCount = 0;
   let quotaExceeded = false;
+  let ipBanned = false;
   for(const s of state.stocks){
     const result = await refreshStockPrice(s);
     if(result.ok){
       updatedCount++;
     } else {
       failCount++;
-      if(result.quotaExceeded){
-        quotaExceeded = true;
-        break; // 額度已經用完，後面繼續打也一定失敗，直接停止，不要浪費時間對一個已經拒絕服務的來源繼續嘗試
+      if(result.quotaExceeded || result.ipBanned){
+        quotaExceeded = result.quotaExceeded;
+        ipBanned = result.ipBanned;
+        break; // 額度用完或 IP 被暫時封鎖，後面繼續打也一定失敗，直接停止，不要浪費時間對一個已經拒絕服務的來源繼續嘗試
       }
     }
   }
@@ -1232,6 +1235,7 @@ async function refreshAllPrices(){
   state.lastPriceRefreshAt = new Date().toISOString();
   state.lastPriceRefreshFailCount = failCount;
   state.lastPriceRefreshQuotaExceeded = quotaExceeded;
+  state.lastPriceRefreshIpBanned = ipBanned;
   state.lastPriceRefreshRemaining = state.stocks.length - updatedCount;
   checkAlertNotifications();
   renderUnlessTyping();
@@ -1446,9 +1450,10 @@ async function addTransaction(){
     if(!price || price<=0){ alert('請輸入成交價，或直接輸入成交總金額'); return; }
   }
 
-  // 不在內建股票池、看起來又不像代號（例如打的是中文名稱）時，先用 FinMind 反查正確代號，
-  // 避免同一檔股票因為輸入方式不同（一次打代號、一次打名稱）被拆成兩個不同的追蹤鍵值
-  if(!ensureStockTracked(symbol) && !/^[0-9]{2,6}[A-Za-z]{0,2}$/.test(symbol)){
+  // 不在內建股票池時，一律先用 FinMind 反查正確代號／名稱／股價——不管輸入的是代號還是名稱都要查，
+  // 因為內建股票池只有 10 檔，其餘任何代號都需要查真正的名稱；resolveFinMindSymbolAndPrice 內部本來就會
+  // 自動判斷輸入是代號還是名稱分別處理，這裡不需要、也不應該提前篩掉「看起來像代號」的情況
+  if(!ensureStockTracked(symbol)){
     try{
       const resolved = await resolveFinMindSymbolAndPrice(draft.symbolInput, symbol);
       if(resolved){
@@ -1836,7 +1841,7 @@ async function addImportedHolding(){
   const date = d.date || new Date().toISOString().slice(0,10);
   const account = (d.account||'').trim();
 
-  if(!ensureStockTracked(symbol) && !/^[0-9]{2,6}[A-Za-z]{0,2}$/.test(symbol)){
+  if(!ensureStockTracked(symbol)){
     try{
       const resolved = await resolveFinMindSymbolAndPrice(d.symbolInput, symbol);
       if(resolved){
@@ -1913,9 +1918,9 @@ function render(){
           <span class="clock mono ${state.twseStatus==='error'?'down-color':(state.twseStatus==='ok'?'up-color':'')}" title="${state.twseStatus==='ok' ? '即時報價來源：台灣證交所（交易時段內每 5 秒更新一次）' : state.twseStatus==='closed' ? '現在非交易時段（平日 09:00–13:30），暫停即時輪詢，畫面顯示的是最近收盤價' : state.twseStatus==='error' ? ('證交所即時報價連線失敗：'+escapeAttr(state.twseError||'')+'，已改用 FinMind 最近收盤價') : '尚未開始'}">
             ${state.twseStatus==='ok' ? '即時報價中（每 5 秒）' : state.twseStatus==='closed' ? '非交易時段' : state.twseStatus==='error' ? '即時報價失敗，改用收盤價' : ''}
           </span>
-          <span class="clock mono ${state.lastPriceRefreshQuotaExceeded?'down-color':''}" title="${state.lastPriceRefreshQuotaExceeded ? 'FinMind 免費額度是每小時 300 次（有填 Token 是 600 次），用完後約 1 小時會自動重置；也可以去「配息」頁籤填入 Token 提高上限，或按「查詢目前額度使用量」確認實際用量' : ''}">
+          <span class="clock mono ${(state.lastPriceRefreshQuotaExceeded||state.lastPriceRefreshIpBanned)?'down-color':''}" title="${state.lastPriceRefreshIpBanned ? 'FinMind 判斷這個網路 IP 短時間內錯誤請求過多，暫時封鎖，約 30 分鐘後自動解除；在解除前，請避免重新整理或重新登入這個網頁，否則會一直重新觸發封鎖倒數' : state.lastPriceRefreshQuotaExceeded ? 'FinMind 免費額度是每小時 300 次（有填 Token 是 600 次），用完後約 1 小時會自動重置；也可以去「配息」頁籤填入 Token 提高上限，或按「查詢目前額度使用量」確認實際用量' : ''}">
             ${state.lastPriceRefreshAt ? '資料更新於 ' + new Date(state.lastPriceRefreshAt).toLocaleString('zh-TW',{hour12:false}) : '尚未抓取股價'}
-            ${state.lastPriceRefreshQuotaExceeded ? `（FinMind 額度已用完，剩下 ${state.lastPriceRefreshRemaining} 檔沒更新到，請稍後再試）` : state.lastPriceRefreshFailCount ? `（${state.lastPriceRefreshFailCount} 檔收盤價抓取失敗）` : ''}
+            ${state.lastPriceRefreshIpBanned ? `（FinMind 暫時封鎖此 IP，剩下 ${state.lastPriceRefreshRemaining} 檔沒更新到，約 30 分鐘後解除，這段時間請不要重新整理或重新登入）` : state.lastPriceRefreshQuotaExceeded ? `（FinMind 額度已用完，剩下 ${state.lastPriceRefreshRemaining} 檔沒更新到，請稍後再試）` : state.lastPriceRefreshFailCount ? `（${state.lastPriceRefreshFailCount} 檔收盤價抓取失敗）` : ''}
           </span>
           <span class="clock mono" title="${lastSaveStatus && lastSaveStatus.ok ? '已加密存到這台瀏覽器，重新整理或關閉分頁後，用同樣的帳密登入即可取回' : (lastSaveStatus ? '儲存失敗：'+lastSaveStatus.message : '')}">
             ${lastSaveStatus ? (lastSaveStatus.ok ? '已自動存檔 ' + new Date(lastSaveStatus.at).toLocaleTimeString('zh-TW',{hour12:false}) : '存檔失敗') : ''}
@@ -2223,6 +2228,7 @@ function resetStateForNewUser(){
   state.lastPriceRefreshAt = null;
   state.lastPriceRefreshFailCount = 0;
   state.lastPriceRefreshQuotaExceeded = false;
+  state.lastPriceRefreshIpBanned = false;
   state.lastPriceRefreshRemaining = 0;
   state.twseStatus = 'idle';
   state.twseError = null;
@@ -3596,12 +3602,14 @@ async function fetchFinMindPrice(symbol){
   if(!resp.ok){
     const err = new Error('HTTP ' + resp.status);
     if(resp.status === 402) err.quotaExceeded = true; // FinMind 額度用完時回傳 402
+    if(resp.status === 403) err.ipBanned = true; // FinMind 判定這個 IP 短時間內錯誤請求過多，暫時封鎖時回傳 403
     throw err;
   }
   const json = await resp.json();
   if(json && json.status && json.status !== 200 && json.status !== '200'){
     const err = new Error(json.msg || ('狀態碼 ' + json.status));
     if(json.status === 402 || json.status === '402') err.quotaExceeded = true;
+    if(json.status === 403 || json.status === '403') err.ipBanned = true;
     throw err;
   }
   const rows = (json.data || []).slice().sort((a,b)=> String(a.date).localeCompare(String(b.date)));
