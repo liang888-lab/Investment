@@ -353,8 +353,6 @@ const state = {
   lastPriceRefreshQuotaExceeded: false,
   lastPriceRefreshIpBanned: false,
   lastPriceRefreshRemaining: 0,
-  twseStatus: 'idle', // idle|ok|closed|error
-  twseError: null,
   selected: STOCK_POOL[0].symbol,
   activeTab: 'tx',
   transactions: [
@@ -1930,9 +1928,7 @@ function render(){
           <span class="sub">個人持股觀測儀表板</span>
         </div>
         <div class="topbar-right">
-          <span class="clock mono ${state.twseStatus==='error'?'down-color':(state.twseStatus==='ok'?'up-color':'')}" title="${state.twseStatus==='ok' ? '即時報價來源：台灣證交所（交易時段內每 5 秒更新一次）' : state.twseStatus==='closed' ? '現在非交易時段（平日 09:00–13:30），暫停即時輪詢，畫面顯示的是最近收盤價' : state.twseStatus==='error' ? ('證交所即時報價連線失敗：'+escapeAttr(state.twseError||'')+'，已改用 FinMind 最近收盤價') : '尚未開始'}">
-            ${state.twseStatus==='ok' ? '即時報價中（每 5 秒）' : state.twseStatus==='closed' ? '非交易時段' : state.twseStatus==='error' ? '即時報價失敗，改用收盤價' : ''}
-          </span>
+
           <span class="clock mono ${(state.lastPriceRefreshQuotaExceeded||state.lastPriceRefreshIpBanned)?'down-color':''}" title="${state.lastPriceRefreshIpBanned ? 'FinMind 判斷這個網路 IP 短時間內錯誤請求過多，暫時封鎖，約 30 分鐘後自動解除；在解除前，請避免重新整理或重新登入這個網頁，否則會一直重新觸發封鎖倒數' : state.lastPriceRefreshQuotaExceeded ? 'FinMind 免費額度是每小時 300 次（有填 Token 是 600 次），用完後約 1 小時會自動重置；也可以去「配息」頁籤填入 Token 提高上限，或按「查詢目前額度使用量」確認實際用量' : ''}">
             ${state.lastPriceRefreshAt ? '資料更新於 ' + new Date(state.lastPriceRefreshAt).toLocaleString('zh-TW',{hour12:false}) : '尚未抓取股價'}
             ${state.lastPriceRefreshIpBanned ? `（FinMind 暫時封鎖此 IP，剩下 ${state.lastPriceRefreshRemaining} 檔沒更新到，約 30 分鐘後解除，這段時間請不要重新整理或重新登入）` : state.lastPriceRefreshQuotaExceeded ? `（FinMind 額度已用完，剩下 ${state.lastPriceRefreshRemaining} 檔沒更新到，請稍後再試）` : state.lastPriceRefreshFailCount ? `（${state.lastPriceRefreshFailCount} 檔收盤價抓取失敗）` : ''}
@@ -2245,10 +2241,6 @@ function resetStateForNewUser(){
   state.lastPriceRefreshQuotaExceeded = false;
   state.lastPriceRefreshIpBanned = false;
   state.lastPriceRefreshRemaining = 0;
-  state.twseStatus = 'idle';
-  state.twseError = null;
-  twseSourceFailed = false;
-  if(twsePollTimer){ clearInterval(twsePollTimer); twsePollTimer = null; }
   stopAutoPull();
   state.selected = STOCK_POOL[0].symbol;
   state.activeTab = 'tx';
@@ -2347,7 +2339,7 @@ function attemptLogin(){
   } else {
     render();
   }
-  refreshAllPrices().then(startTWSEPolling); // 先用 FinMind 抓到最近收盤價當底，完成後才開始 TWSE 輪詢，避免兩邊資料互相蓋過去
+  refreshAllPrices(); // 抓最近收盤價當底
   ensureFinMindStockInfoCache().catch(()=>{}); // 背景預先載入完整台股清單，讓輸入代號/名稱時的即時比對能涵蓋所有股票，不只內建的 10 檔
 }
 function logout(){
@@ -2367,7 +2359,7 @@ function clearPersistedState(){
   resetStateForNewUser();
   persistState(); // 立刻覆寫成空白（也會同步推上雲端，如果有設定同步網址的話）
   render();
-  refreshAllPrices().then(startTWSEPolling); // 清空後這裡也會停掉輪詢，重新啟動一次
+  refreshAllPrices(); // 清空後重新抓一次
   if(state.sync.url) startAutoPull(); // 同樣道理，清空資料時會連帶停掉背景同步檢查，這裡重新啟動
 }
 
@@ -3511,99 +3503,18 @@ function renderPLSummaryTab(){
 }
 
 /* ================= 用 FinMind 查詢股價（新增觀察股時，若不是內建模擬股票池裡的代號就用這個抓） ================= */
-/* ================= 台灣證交所盤中即時報價（mis.twse.com.tw，非官方文件、逆向工程得出）=================
-   這個介面沒有正式文件，也沒有人保證瀏覽器能跨網域直接呼叫成功；一旦失敗就自動退回用 FinMind
-   的最近收盤價（見下方 fetchFinMindPrice），確保至少還看得到合理的資料。 */
-let twsePollTimer = null;
-let twseSourceFailed = false; // 一旦連線失敗就先停止繼續嘗試，改用 FinMind，避免對一個壞掉的來源一直重打
-
-function isTaiwanTradingHoursNow(){
-  const d = new Date();
-  const day = d.getDay(); // 0=週日...6=週六
-  if(day===0 || day===6) return false;
-  const mins = d.getHours()*60 + d.getMinutes();
-  return mins >= 9*60 && mins <= 13*60+35; // 09:00–13:35（含收盤後幾分鐘緩衝）
-}
-async function fetchTWSEQuotesRaw(channels){
-  const url = 'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?json=1&delay=0&_=' + Date.now() + '&ex_ch=' + encodeURIComponent(channels);
-  const resp = await fetch(url);
-  if(!resp.ok) throw new Error('HTTP ' + resp.status);
-  return resp.json();
-}
-function applyTWSEQuote(out, m){
-  const z = parseFloat(m.z); // 最近成交價，可能是 "-"（今天還沒成交過）
-  const y = parseFloat(m.y); // 昨收
-  const price = !Number.isNaN(z) ? z : (!Number.isNaN(y) ? y : null);
-  if(price!=null) out[m.c] = { price, prevClose: !Number.isNaN(y) ? y : price };
-}
-// 先當作全部是上市（tse_）批次查一次，查不到的再當成上櫃（otc_）重試一次，兩種都涵蓋到
-async function fetchTWSEQuotes(symbols){
-  if(!symbols.length) return {};
-  const out = {};
-  const json1 = await fetchTWSEQuotesRaw(symbols.map(s=>'tse_'+s+'.tw').join('|'));
-  const found = new Set();
-  (json1.msgArray||[]).forEach(m=>{ found.add(m.c); applyTWSEQuote(out, m); });
-  const missing = symbols.filter(s=>!found.has(s));
-  if(missing.length){
-    try{
-      const json2 = await fetchTWSEQuotesRaw(missing.map(s=>'otc_'+s+'.tw').join('|'));
-      (json2.msgArray||[]).forEach(m=> applyTWSEQuote(out, m));
-    }catch(e){ /* 上櫃那批查不到就算了，不影響上市的部分 */ }
-  }
-  return out;
-}
-async function pollTWSEPrices(){
-  if(!state.session.loggedIn || twseSourceFailed) return;
-  if(!isTaiwanTradingHoursNow()){ state.twseStatus = 'closed'; return; }
-  try{
-    const symbols = state.stocks.map(s=>s.symbol);
-    const quotes = await fetchTWSEQuotes(symbols);
-    let updated = false;
-    state.stocks.forEach(s=>{
-      const q = quotes[s.symbol];
-      if(q){
-        s.price = q.price;
-        s.prevClose = q.prevClose;
-        s.history.push(q.price);
-        if(s.history.length>30) s.history.shift();
-        updated = true;
-      }
-    });
-    state.twseStatus = 'ok';
-    state.twseError = null;
-    if(updated){
-      state.lastPriceRefreshAt = new Date().toISOString();
-      checkAlertNotifications();
-    }
-    renderUnlessTyping();
-  } catch(err){
-    state.twseStatus = 'error';
-    state.twseError = (err && err.message) || '連線失敗（可能是瀏覽器封鎖跨網域請求，或該介面暫時無法使用）';
-    twseSourceFailed = true; // 先停止繼續嘗試；使用者按「重新整理報價」時會再給它一次機會
-    renderUnlessTyping();
-  }
-}
-function startTWSEPolling(){
-  if(twsePollTimer) clearInterval(twsePollTimer);
-  twsePollTimer = setInterval(pollTWSEPrices, 5000);
-  pollTWSEPrices(); // 立刻先打一次，不用乾等 5 秒
-}
-// 手動按「重新整理報價」：重新給 TWSE 一次機會；如果還是失敗，退回用 FinMind 的最近收盤價
+// 手動按「重新整理報價」：直接抓 FinMind 最近收盤價（原本有接台灣證交所的非官方即時報價介面，
+// 但實測證實該介面完全沒有開放跨網域瀏覽器存取，一定會被 CORS 擋下來，留著只會白白浪費資源，已經拿掉）
 async function manualRefreshPrices(){
-  twseSourceFailed = false;
-  await pollTWSEPrices();
-  if(state.twseStatus === 'error' || state.twseStatus === 'closed'){
-    // 非交易時段或 TWSE 失敗，才會退回抓 FinMind——這條路徑比較貴（每檔股票都要額外呼叫 FinMind），
-    // 收盤價同一天不會變，短時間內重複點意義不大，先跟使用者確認一下，避免不小心浪費額度
-    if(state.lastPriceRefreshAt && !state.lastPriceRefreshQuotaExceeded){
-      const ageMs = Date.now() - new Date(state.lastPriceRefreshAt).getTime();
-      if(ageMs < 5*60*1000){
-        const ageSec = Math.round(ageMs/1000);
-        if(!confirm(`${ageSec} 秒前才剛用 FinMind 更新過收盤價，非交易時段這份資料通常不會變。確定要再花一次額度重新抓取嗎？`)) return;
-      }
+  // 短時間內重複點意義不大（收盤價同一天不會變），先跟使用者確認一下，避免不小心浪費額度
+  if(state.lastPriceRefreshAt && !state.lastPriceRefreshQuotaExceeded && !state.lastPriceRefreshIpBanned){
+    const ageMs = Date.now() - new Date(state.lastPriceRefreshAt).getTime();
+    if(ageMs < 5*60*1000){
+      const ageSec = Math.round(ageMs/1000);
+      if(!confirm(`${ageSec} 秒前才剛用 FinMind 更新過收盤價，短時間內這份資料通常不會變。確定要再花一次額度重新抓取嗎？`)) return;
     }
-    await refreshAllPrices();
   }
+  await refreshAllPrices();
 }
 
 async function fetchFinMindPrice(symbol){
