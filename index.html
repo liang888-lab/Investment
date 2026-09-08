@@ -1772,11 +1772,18 @@ function selectPortfolioAccount(a){ state.portfolioAccountFilter = a; render(); 
 async function reconcileDuplicateSymbols(){
   const suspects = Array.from(new Set(state.transactions.map(t=>t.symbol)))
     .filter(sym => !getStock(sym) && !/^[0-9]{2,6}[A-Za-z]{0,2}$/.test(sym));
-  if(!suspects.length){ alert('沒有發現看起來需要修正的股票標記，目前的股票代號都正常。'); return; }
-  if(!confirm(`發現這些看起來像是誤打成名稱、沒有正確代號的標記：${suspects.join('、')}\n要嘗試用 FinMind 反查正確代號並合併嗎？`)) return;
+  // 「名稱等於代號」代表當初新增這檔股票時，查詢真正中文名稱那一步失敗或被跳過了（例如修 bug 之前的舊資料），
+  // 這裡一併找出來，重新查一次正確名稱補上
+  const missingNameStocks = state.stocks.filter(s => s.name === s.symbol);
+  if(!suspects.length && !missingNameStocks.length){ alert('沒有發現看起來需要修正的股票標記，目前的股票代號跟名稱都正常。'); return; }
+  const parts = [];
+  if(suspects.length) parts.push(`看起來像是誤打成名稱、沒有正確代號的標記：${suspects.join('、')}`);
+  if(missingNameStocks.length) parts.push(`名稱缺失、只顯示代號的股票：${missingNameStocks.map(s=>s.symbol).join('、')}`);
+  if(!confirm(`發現以下需要修正的項目——\n${parts.join('\n')}\n要嘗試用 FinMind 反查正確代號／名稱並修正嗎？`)) return;
   state.reconciling = true;
   render();
   let mergedCount = 0;
+  let nameFixedCount = 0;
   const failed = [];
   for(const sym of suspects){
     try{
@@ -1798,11 +1805,19 @@ async function reconcileDuplicateSymbols(){
       }
     } catch(err){ failed.push(sym); }
   }
+  for(const s of missingNameStocks){
+    try{
+      const properName = await lookupFinMindStockName(s.symbol);
+      if(properName && properName !== s.symbol){ s.name = properName; nameFixedCount++; }
+      else failed.push(s.symbol);
+    } catch(err){ failed.push(s.symbol); }
+  }
   state.reconciling = false;
   render();
   alert(
     (mergedCount ? `已合併 ${mergedCount} 檔股票的代號。\n` : '') +
-    (failed.length ? `這些標記查不到對應代號，可能本來就是有效的自訂代號，未變動：${failed.join('、')}` : '')
+    (nameFixedCount ? `已補上 ${nameFixedCount} 檔股票的正確名稱。\n` : '') +
+    (failed.length ? `這些查不到對應資料，可能本來就是有效的自訂代號，未變動：${failed.join('、')}` : '')
     || '完成，沒有需要調整的項目。'
   );
 }
@@ -3265,7 +3280,7 @@ function renderPortfolioTab(){
     <div class="panel-section">
       <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
         <h3 style="margin:0;">持股總覽</h3>
-        <button class="btn-ghost" onclick="reconcileDuplicateSymbols()" ${state.reconciling?'disabled':''} title="如果同一檔股票因為輸入方式不同（一次打代號、一次打名稱）被拆成兩筆，用這個自動合併">${state.reconciling?'整理中…':'整理重複股票代號'}</button>
+        <button class="btn-ghost" onclick="reconcileDuplicateSymbols()" ${state.reconciling?'disabled':''} title="修正兩種舊資料問題：①同一檔股票因為輸入方式不同（一次打代號、一次打名稱）被拆成兩筆；②股票名稱沒查到、直接顯示成代號本身">${state.reconciling?'整理中…':'整理股票代號／名稱'}</button>
       </div>
       ${accountTabsHtml}
       <p class="panel-hint">持股成本＝股數×平均成本（已內含買進手續費，若為「期初匯入」則為你輸入的總成本）；未實現損益已另外扣除試算的賣出手續費與證交稅（費率可於「交易紀錄」頁籤調整）；持有天數以該股最早一筆交易紀錄起算。${showAccountTabs?'目前顯示「'+escapeAttr(selectedAccount)+'」的持股；':''}輸入錯誤時，最右邊 ✕ 可以刪除該檔股票（在目前篩選帳戶下）的所有交易紀錄重新輸入；如果只想刪除某一筆交易，請到「交易紀錄」頁籤操作</p>
