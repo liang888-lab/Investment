@@ -705,7 +705,7 @@ async function fetchForeignNetBuy(symbol){
   const fmt2 = d => d.toISOString().slice(0,10);
   const params = new URLSearchParams({ dataset:'TaiwanStockInstitutionalInvestorsBuySell', data_id: symbol, start_date: fmt2(start), end_date: fmt2(end) });
   const headers = {};
-  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
   const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
   if(!resp.ok) throw new Error('HTTP ' + resp.status);
   const json = await resp.json();
@@ -730,7 +730,7 @@ async function fetchForeignNetBuy(symbol){
    遇到少數公司科目命名方式不同時可能抓不到，會顯示「查無資料」而不是顯示錯誤數字。 */
 async function fetchFinMindDataset(dataset, symbol, startDate, endDate){
   const headers = {};
-  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
   const params = new URLSearchParams({ dataset, data_id: symbol, start_date: startDate });
   if(endDate) params.set('end_date', endDate);
   const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
@@ -1179,7 +1179,7 @@ async function checkFinmindQuota(){
   render();
   try{
     const resp = await fetch('https://api.web.finmindtrade.com/v2/user_info', {
-      headers: { 'Authorization': 'Bearer ' + state.finmindToken },
+      headers: { 'Authorization': 'Bearer ' + state.finmindToken.trim() },
     });
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const json = await resp.json();
@@ -1242,8 +1242,49 @@ async function refreshAllPrices(){
   state.lastPriceRefreshQuotaExceeded = quotaExceeded;
   state.lastPriceRefreshIpBanned = ipBanned;
   state.lastPriceRefreshRemaining = state.stocks.length - updatedCount;
+  if(updatedCount) savePriceSnapshot(); // 至少成功更新到一些資料，才值得存快照
   checkAlertNotifications();
   renderUnlessTyping();
+}
+
+/* ================= 股價本機快取（純粹為了避免短時間內重複重整／重新登入時，對 FinMind 重打一輪造成額度浪費或觸發封鎖） =================
+   刻意跟前面「使用者真正的資料」分開存放：這份快取不加密、不會同步到雲端，純本機、純效率用途，
+   放在獨立的 localStorage key，不會混進會觸發同步的那份加密資料裡，避免又把「股價一直變」的問題帶回同步機制。 */
+function priceSnapshotKey(username){ return 'stockDashboard:v1:priceSnapshot:' + username; }
+function savePriceSnapshot(){
+  if(!state.session.loggedIn) return;
+  try{
+    const snapshot = {
+      at: new Date().toISOString(),
+      stocks: state.stocks.map(s=>({ symbol:s.symbol, price:s.price, prevClose:s.prevClose, history:s.history, foreign:s.foreign, foreignFetchedDate:s.foreignFetchedDate })),
+    };
+    localStorage.setItem(priceSnapshotKey(state.session.username), JSON.stringify(snapshot));
+  } catch(e){ /* 存不進去就算了，純粹是效率優化，不影響核心功能 */ }
+}
+// 有近期（10 分鐘內）的快取才回傳，太舊視為無效，讓呼叫端該重新抓的還是會去抓
+function loadFreshPriceSnapshot(){
+  if(!state.session.loggedIn) return null;
+  try{
+    const raw = localStorage.getItem(priceSnapshotKey(state.session.username));
+    if(!raw) return null;
+    const snapshot = JSON.parse(raw);
+    if(!snapshot || !snapshot.at || !Array.isArray(snapshot.stocks)) return null;
+    if(Date.now() - new Date(snapshot.at).getTime() > 10*60*1000) return null;
+    return snapshot;
+  } catch(e){ return null; }
+}
+function applyPriceSnapshot(snapshot){
+  const map = {};
+  snapshot.stocks.forEach(p=>{ map[p.symbol] = p; });
+  state.stocks.forEach(s=>{
+    const p = map[s.symbol];
+    if(!p) return;
+    s.price = p.price; s.prevClose = p.prevClose;
+    if(Array.isArray(p.history) && p.history.length) s.history = p.history;
+    if(p.foreign != null) s.foreign = p.foreign;
+    if(p.foreignFetchedDate) s.foreignFetchedDate = p.foreignFetchedDate;
+  });
+  state.lastPriceRefreshAt = snapshot.at;
 }
 
 /* ================= 工具 ================= */
@@ -1345,6 +1386,16 @@ async function addStockBySymbol(){
     finishAddStock(symbol);
   } catch(err){
     state.addStockFetching = false;
+    if(err && err.quotaExceeded){
+      alert('FinMind 免費額度已用完（每小時 300 次，有填 Token 是 600 次），請稍後再試，或去「配息」頁籤填入 Token 提高上限。');
+      render();
+      return;
+    }
+    if(err && err.ipBanned){
+      alert('FinMind 判斷這個網路 IP 短時間內錯誤請求過多，暫時封鎖，約 30 分鐘後自動解除。這段時間請避免重新整理或重新登入，否則會一直重新觸發封鎖倒數，永遠等不到解除。');
+      render();
+      return;
+    }
     const priceInput = prompt(`連線 FinMind 查詢股價失敗（${(err&&err.message)||'網路問題'}）。要改成手動輸入目前股價來建立追蹤嗎？取消則不加入。`);
     const price = parseFloat(priceInput);
     if(!price || price<=0){ render(); return; }
@@ -2356,7 +2407,16 @@ function attemptLogin(){
   } else {
     render();
   }
-  refreshAllPrices().then(startPriceSheetPolling); // 先用 FinMind 抓到最近收盤價當底，完成後才開始盤中價格輪詢，避免兩邊資料互相蓋過去
+  // 10 分鐘內剛抓過的話直接沿用快取，不用再對 FinMind 打一輪——這是造成短時間內重複重整/重新登入時
+  // 疊加大量請求、進而觸發額度超標或 IP 被暫時封鎖的主因之一
+  const freshSnapshot = loadFreshPriceSnapshot();
+  if(freshSnapshot){
+    applyPriceSnapshot(freshSnapshot);
+    render();
+    startPriceSheetPolling();
+  } else {
+    refreshAllPrices().then(startPriceSheetPolling); // 先用 FinMind 抓到最近收盤價當底，完成後才開始盤中價格輪詢，避免兩邊資料互相蓋過去
+  }
   ensureFinMindStockInfoCache().catch(()=>{}); // 背景預先載入完整台股清單，讓輸入代號/名稱時的即時比對能涵蓋所有股票，不只內建的 10 檔
 }
 function logout(){
@@ -3638,7 +3698,7 @@ async function fetchFinMindPrice(symbol){
   const fmt2 = d => d.toISOString().slice(0,10);
   const params = new URLSearchParams({ dataset:'TaiwanStockPrice', data_id: symbol, start_date: fmt2(start), end_date: fmt2(end) });
   const headers = {};
-  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
   const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
   if(!resp.ok){
     const err = new Error('HTTP ' + resp.status);
@@ -3668,7 +3728,7 @@ let finmindStockInfoCache = null;
 async function ensureFinMindStockInfoCache(){
   if(finmindStockInfoCache) return finmindStockInfoCache;
   const headers = {};
-  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
   const resp = await fetch('https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo', { headers });
   if(!resp.ok) throw new Error('HTTP ' + resp.status);
   const json = await resp.json();
@@ -3718,7 +3778,7 @@ async function fetchDividends(symbol){
   try{
     const params = new URLSearchParams({ dataset:'TaiwanStockDividend', data_id: symbol, start_date:'2015-01-01' });
     const headers = {};
-    if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken;
+    if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
     const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const json = await resp.json();
