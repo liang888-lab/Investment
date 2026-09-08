@@ -386,6 +386,7 @@ const state = {
   txListCollapsed: true,                // 買賣交易紀錄清單預設收合，輸入表單優先顯示在最上面
   txFormCollapsed: true,                // 新增交易的輸入表單，預設也收合，點開才顯示
   syncUrlSettingsCollapsed: true,        // 雲端同步網址設定，預設收合，設定過一次後平常不太需要再看
+  priceSheetSettingsCollapsed: true,
   feeSettings: {
     buyFeeRate: 0.001425,   // 買進手續費率，預設 0.1425%（個股與 ETF 手續費率通常相同，不分開設定）
     sellFeeRate: 0.001425,  // 賣出手續費率，預設 0.1425%
@@ -413,6 +414,11 @@ const state = {
   channelLinkDraft: { url:'', title:'', symbolInput:'' },
   channelLinkEditingId: null,
   channelLinkSummaryDraft: '',
+  priceSheetUrl: '', // GOOGLEFINANCE 盤中價格試算表網址（自己設定的，不是官方 API，抓不到就自動退回 FinMind 收盤價）
+  priceSheetStatus: 'idle', // idle|ok|error
+  priceSheetError: null,
+  priceSheetLastFetchAt: null,
+  priceSheetMatchedCount: 0,
   channelLinkExpandedId: null,
   channelSearchQuery: '',
   analysisSectionCollapsed: { fundamentals:false, valuation:true, chip:true, notes:true, news:true },
@@ -522,6 +528,7 @@ function toggleTxSymbolGroup(sym){ state.txExpandedSymbol = (state.txExpandedSym
 function toggleTxList(){ state.txListCollapsed = !state.txListCollapsed; render(); }
 function toggleTxForm(){ state.txFormCollapsed = !state.txFormCollapsed; render(); }
 function toggleSyncUrlSettings(){ state.syncUrlSettingsCollapsed = !state.syncUrlSettingsCollapsed; render(); }
+function togglePriceSheetSettings(){ state.priceSheetSettingsCollapsed = !state.priceSheetSettingsCollapsed; render(); }
 function togglePlMonthlyView(){ state.plMonthlyCollapsed = !state.plMonthlyCollapsed; render(); }
 function togglePlYear(y){ state.plExpandedYear = (state.plExpandedYear === y) ? null : y; render(); }
 function togglePlImportedList(){ state.plImportedListCollapsed = !state.plImportedListCollapsed; render(); }
@@ -1490,6 +1497,8 @@ const SHEET_HEADER_ALIASES = {
   date: ['日期','起始日期','持有日期','買進日期','交易日期','date'],
   plAmount: ['損益金額','損益','已實現損益','金額','amount','pl','profit','realized'],
   account: ['帳戶','戶頭','券商','account','broker'],
+  stockName: ['股票名稱','名稱','公司名稱','name'],
+  priceValue: ['盤中價格','股價','現價','價格','price'],
 };
 // 簡易 CSV 解析器（自己寫的，不依賴外部函式庫，避免外部 CDN 載入失敗導致整個功能壞掉）
 // 支援標準逗號分隔、雙引號欄位（含欄位內逗號、換行、跳脫雙引號 ""），第一列當標題
@@ -2030,6 +2039,7 @@ function persistState(){
       nextImportedPLId: state.nextImportedPLId,
       sheetImportUrl: state.sheetImport.url,
       plSheetImportUrl: state.plSheetImport.url,
+      priceSheetUrl: state.priceSheetUrl,
     };
     // 關鍵修正：savedAt 以前是「每次呼叫 persistState 就重蓋成現在時間」，但這個函式其實會被非常頻繁地觸發
     // （例如盤中每 5 秒的報價輪詢，只要畫面重繪就會排程呼叫一次），導致 savedAt 幾乎隨時都是「剛剛」，
@@ -2222,6 +2232,7 @@ function applyPersistedData(data){
   if(typeof data.nextImportedPLId === 'number') state.nextImportedPLId = data.nextImportedPLId;
   if(typeof data.sheetImportUrl === 'string') state.sheetImport.url = data.sheetImportUrl;
   if(typeof data.plSheetImportUrl === 'string') state.plSheetImport.url = data.plSheetImportUrl;
+  if(typeof data.priceSheetUrl === 'string') state.priceSheetUrl = data.priceSheetUrl;
   if(!getStock(state.selected)) state.selected = state.stocks[0]?.symbol;
 }
 function resetStateForNewUser(){
@@ -2241,7 +2252,13 @@ function resetStateForNewUser(){
   state.lastPriceRefreshQuotaExceeded = false;
   state.lastPriceRefreshIpBanned = false;
   state.lastPriceRefreshRemaining = 0;
+  state.priceSheetUrl = '';
+  state.priceSheetStatus = 'idle';
+  state.priceSheetError = null;
+  state.priceSheetLastFetchAt = null;
+  state.priceSheetMatchedCount = 0;
   stopAutoPull();
+  stopPriceSheetPolling();
   state.selected = STOCK_POOL[0].symbol;
   state.activeTab = 'tx';
   state.transactions = [];
@@ -2339,7 +2356,7 @@ function attemptLogin(){
   } else {
     render();
   }
-  refreshAllPrices(); // 抓最近收盤價當底
+  refreshAllPrices().then(startPriceSheetPolling); // 先用 FinMind 抓到最近收盤價當底，完成後才開始盤中價格輪詢，避免兩邊資料互相蓋過去
   ensureFinMindStockInfoCache().catch(()=>{}); // 背景預先載入完整台股清單，讓輸入代號/名稱時的即時比對能涵蓋所有股票，不只內建的 10 檔
 }
 function logout(){
@@ -2359,7 +2376,7 @@ function clearPersistedState(){
   resetStateForNewUser();
   persistState(); // 立刻覆寫成空白（也會同步推上雲端，如果有設定同步網址的話）
   render();
-  refreshAllPrices(); // 清空後重新抓一次
+  refreshAllPrices().then(startPriceSheetPolling); // 清空後重新抓一次，完成後也重新開始盤中價格輪詢
   if(state.sync.url) startAutoPull(); // 同樣道理，清空資料時會連帶停掉背景同步檢查，這裡重新啟動
 }
 
@@ -2963,6 +2980,10 @@ function renderTransactionsTab(sel){
     : state.sync.status==='ok' ? `已同步${state.sync.lastSyncAt ? '（'+new Date(state.sync.lastSyncAt).toLocaleTimeString('zh-TW',{hour12:false})+'）' : ''}`
     : state.sync.status==='error' ? `同步失敗：${state.sync.error||''}`
     : '尚未同步';
+  const priceSheetStatusText = !state.priceSheetUrl ? '未設定'
+    : state.priceSheetStatus==='ok' ? `已更新（${state.priceSheetMatchedCount} 檔）${state.priceSheetLastFetchAt ? '　'+new Date(state.priceSheetLastFetchAt).toLocaleTimeString('zh-TW',{hour12:false}) : ''}`
+    : state.priceSheetStatus==='error' ? `讀取失敗：${state.priceSheetError||''}`
+    : '尚未讀取';
 
   return `
     <div class="panel-section">
@@ -3049,6 +3070,31 @@ function renderTransactionsTab(sel){
             </div>
           </div>
           <p class="panel-hint" style="margin-top:8px; margin-bottom:0;">貼上 Google Apps Script 部署後的網址，資料會加密推一份到你自己的 Google 試算表；換電腦、換瀏覽器時，登入畫面貼上同一組帳號密碼＋同一個網址即可取回。留空就只存在這台瀏覽器。</p>
+        </div>
+      `}
+    </div>
+
+    <div class="panel-section">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">盤中股價來源（選用）</h3>
+        <span style="font-size:11px; color:var(--text-faint);">${escapeAttr(priceSheetStatusText)}</span>
+      </div>
+      <p class="panel-hint">如果你自己有建立一份用 GOOGLEFINANCE 抓報價的 Google 試算表，可以貼在這裡，每 2 分鐘會抓一次，比純收盤價更接近盤中狀況；抓不到的股票會自動退回用 FinMind 收盤價。這不是官方即時 API，Google 官方文件寫明最長可能延遲 20 分鐘，僅供參考。</p>
+      <div class="collapsible-head" onclick="togglePriceSheetSettings()">
+        <span style="font-size:12px; color:var(--text-dim); font-weight:600;">試算表網址設定</span>
+        <span class="collapsible-arrow">${state.priceSheetSettingsCollapsed ? '▸' : '▾'}</span>
+      </div>
+      ${state.priceSheetSettingsCollapsed ? `
+        <p class="panel-hint" style="cursor:pointer; margin-top:6px;" onclick="togglePriceSheetSettings()">${state.priceSheetUrl ? '已設定盤中股價試算表，點這裡查看或修改' : '尚未設定，點這裡貼上試算表網址'}</p>
+      ` : `
+        <div class="card" style="margin-top:8px;">
+          <div class="field-grid" style="grid-template-columns: 1fr;">
+            <div>
+              <label>Google 試算表網址</label>
+              <input type="text" id="price-sheet-url" value="${escapeAttr(state.priceSheetUrl)}" placeholder="https://docs.google.com/spreadsheets/d/..." oninput="updatePriceSheetUrl(this.value)"/>
+            </div>
+          </div>
+          <p class="panel-hint" style="margin-top:8px; margin-bottom:0;">試算表需要先設定「共用」→「知道連結的任何人」可檢視；欄位標題請包含：<b>代號</b>、<b>盤中價格</b>（選填：股票名稱）。</p>
         </div>
       `}
     </div>
@@ -3515,6 +3561,75 @@ async function manualRefreshPrices(){
     }
   }
   await refreshAllPrices();
+}
+
+/* ================= 盤中股價（使用者自建的 GOOGLEFINANCE 試算表，非官方 API，抓不到就退回 FinMind 收盤價） =================
+   一次抓整份 CSV（Google 試算表本來就沒辦法用網址參數只拉部分列），但只會用到目前有追蹤的股票資料，
+   其餘直接忽略；不會針對每一檔股票分別發送請求，這樣不管追蹤幾檔股票，每次更新永遠只有 1 次網路請求。
+   官方文件寫明 GOOGLEFINANCE 的報價最長可能延遲 20 分鐘，不是逐筆成交等級的即時，這裡如實呈現，不假裝更準確。 */
+let priceSheetPollTimer = null;
+const PRICE_SHEET_POLL_MS = 2 * 60 * 1000; // 2 分鐘一次
+async function fetchPriceSheetQuotes(){
+  const csvUrl = buildSheetCsvUrl(state.priceSheetUrl);
+  if(!csvUrl) throw new Error('看不出這是 Google 試算表的連結');
+  const resp = await fetch(csvUrl);
+  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  const text = await resp.text();
+  const rows = parseCSV(text.trim());
+  if(!rows.length) return {};
+  const headers = Object.keys(rows[0]);
+  const symbolKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.symbol);
+  const nameKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.stockName);
+  const priceKey = findSheetHeaderKey(headers, SHEET_HEADER_ALIASES.priceValue);
+  if(!symbolKey || !priceKey) throw new Error('試算表裡找不到「代號」或「盤中價格」欄位，請確認標題文字');
+  const out = {};
+  rows.forEach(r=>{
+    const sym = String(r[symbolKey]||'').trim();
+    const priceRaw = String(r[priceKey]||'').replace(/,/g,'').trim();
+    const price = parseFloat(priceRaw);
+    if(!sym || !price || Number.isNaN(price) || price<=0) return; // 這列是 N/A 或空白，跳過，讓它退回用 FinMind
+    out[sym] = { price, name: nameKey ? String(r[nameKey]||'').trim() : '' };
+  });
+  return out;
+}
+async function pollPriceSheet(){
+  if(!state.session.loggedIn || !state.priceSheetUrl) return;
+  try{
+    const quotes = await fetchPriceSheetQuotes();
+    let matched = 0;
+    state.stocks.forEach(s=>{
+      const q = quotes[s.symbol];
+      if(q && q.price>0){
+        s.price = q.price;
+        s.history.push(q.price);
+        if(s.history.length>30) s.history.shift();
+        matched++;
+      }
+    });
+    state.priceSheetStatus = 'ok';
+    state.priceSheetError = null;
+    state.priceSheetLastFetchAt = new Date().toISOString();
+    state.priceSheetMatchedCount = matched;
+    if(matched){ checkAlertNotifications(); }
+    renderUnlessTyping();
+  } catch(err){
+    state.priceSheetStatus = 'error';
+    state.priceSheetError = (err && err.message) || '讀取失敗';
+    renderUnlessTyping();
+  }
+}
+function startPriceSheetPolling(){
+  if(!state.priceSheetUrl) return;
+  if(priceSheetPollTimer) clearInterval(priceSheetPollTimer);
+  priceSheetPollTimer = setInterval(pollPriceSheet, PRICE_SHEET_POLL_MS);
+  pollPriceSheet(); // 立刻先抓一次，不用乾等 2 分鐘
+}
+function stopPriceSheetPolling(){
+  if(priceSheetPollTimer){ clearInterval(priceSheetPollTimer); priceSheetPollTimer = null; }
+}
+function updatePriceSheetUrl(value){
+  state.priceSheetUrl = value.trim();
+  if(state.priceSheetUrl) startPriceSheetPolling(); else stopPriceSheetPolling();
 }
 
 async function fetchFinMindPrice(symbol){
