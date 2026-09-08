@@ -704,9 +704,11 @@ async function fetchForeignNetBuy(symbol){
   const start = new Date(end.getTime() - 10*86400000); // 抓近 10 天，確保能拿到最近一個交易日的資料
   const fmt2 = d => d.toISOString().slice(0,10);
   const params = new URLSearchParams({ dataset:'TaiwanStockInstitutionalInvestorsBuySell', data_id: symbol, start_date: fmt2(start), end_date: fmt2(end) });
-  const headers = {};
-  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
-  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
+  // Token 刻意放在 URL 查詢參數，不放 Authorization header——瀏覽器直接呼叫 FinMind 時，
+  // 帶自訂 header 會觸發 CORS 預檢（preflight），而 FinMind 沒有正確回應預檢的 CORS 標頭，
+  // 導致整個請求被瀏覽器擋下（詳見 fetchFinMindPrice 註解）。改成查詢參數就不會觸發預檢。
+  if(state.finmindToken) params.set('token', state.finmindToken.trim());
+  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString());
   if(!resp.ok) throw new Error('HTTP ' + resp.status);
   const json = await resp.json();
   if(json && json.status && json.status !== 200 && json.status !== '200'){
@@ -729,11 +731,10 @@ async function fetchForeignNetBuy(symbol){
    對照表，所以改用 origin_name（財報原始中文科目名稱）關鍵字比對抓需要的數字。這是文字比對，不是結構化欄位，
    遇到少數公司科目命名方式不同時可能抓不到，會顯示「查無資料」而不是顯示錯誤數字。 */
 async function fetchFinMindDataset(dataset, symbol, startDate, endDate){
-  const headers = {};
-  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
   const params = new URLSearchParams({ dataset, data_id: symbol, start_date: startDate });
   if(endDate) params.set('end_date', endDate);
-  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
+  if(state.finmindToken) params.set('token', state.finmindToken.trim()); // 放查詢參數避免觸發 CORS 預檢，見 fetchFinMindPrice 註解
+  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString());
   if(!resp.ok) throw new Error('HTTP ' + resp.status);
   const json = await resp.json();
   if(json && json.status && json.status !== 200 && json.status !== '200'){
@@ -1178,9 +1179,8 @@ async function checkFinmindQuota(){
   state.finmindQuota.loading = true;
   render();
   try{
-    const resp = await fetch('https://api.web.finmindtrade.com/v2/user_info', {
-      headers: { 'Authorization': 'Bearer ' + state.finmindToken.trim() },
-    });
+    // Token 放查詢參數，不放 Authorization header——避免瀏覽器直接呼叫時觸發 CORS 預檢被擋，見 fetchFinMindPrice 註解
+    const resp = await fetch('https://api.web.finmindtrade.com/v2/user_info?token=' + encodeURIComponent(state.finmindToken.trim()));
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const json = await resp.json();
     state.finmindQuota = {
@@ -3697,9 +3697,13 @@ async function fetchFinMindPrice(symbol){
   const start = new Date(end.getTime() - 40*86400000); // 抓近 40 天（約可涵蓋 20+ 個交易日），供股價與走勢圖使用
   const fmt2 = d => d.toISOString().slice(0,10);
   const params = new URLSearchParams({ dataset:'TaiwanStockPrice', data_id: symbol, start_date: fmt2(start), end_date: fmt2(end) });
-  const headers = {};
-  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
-  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
+  // Token 刻意放在 URL 查詢參數（?token=），不是放 Authorization header：這個網站是純前端直接呼叫
+  // FinMind，瀏覽器一旦看到自訂的 Authorization header 就會先送一個 CORS 預檢（OPTIONS）請求，
+  // 而 FinMind 的伺服器沒有針對這個預檢正確回應允許的 CORS 標頭，導致整個請求被瀏覽器擋下（不是
+  // Token 錯誤或額度問題）。改成查詢參數就是一般的 GET，不會觸發預檢，能沿用「沒填 Token 也能正常
+  // 運作」的那條路徑。
+  if(state.finmindToken) params.set('token', state.finmindToken.trim());
+  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString());
   if(!resp.ok){
     const err = new Error('HTTP ' + resp.status);
     if(resp.status === 402) err.quotaExceeded = true; // FinMind 額度用完時回傳 402
@@ -3727,9 +3731,9 @@ async function fetchFinMindPrice(symbol){
 let finmindStockInfoCache = null;
 async function ensureFinMindStockInfoCache(){
   if(finmindStockInfoCache) return finmindStockInfoCache;
-  const headers = {};
-  if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
-  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo', { headers });
+  const params = new URLSearchParams({ dataset:'TaiwanStockInfo' });
+  if(state.finmindToken) params.set('token', state.finmindToken.trim()); // 放查詢參數避免觸發 CORS 預檢，見 fetchFinMindPrice 註解
+  const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString());
   if(!resp.ok) throw new Error('HTTP ' + resp.status);
   const json = await resp.json();
   finmindStockInfoCache = json.data || [];
@@ -3777,9 +3781,8 @@ async function fetchDividends(symbol){
   render();
   try{
     const params = new URLSearchParams({ dataset:'TaiwanStockDividend', data_id: symbol, start_date:'2015-01-01' });
-    const headers = {};
-    if(state.finmindToken) headers['Authorization'] = 'Bearer ' + state.finmindToken.trim();
-    const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString(), { headers });
+    if(state.finmindToken) params.set('token', state.finmindToken.trim()); // 放查詢參數避免觸發 CORS 預檢，見 fetchFinMindPrice 註解
+    const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString());
     if(!resp.ok) throw new Error('HTTP ' + resp.status);
     const json = await resp.json();
     if(json && json.status && json.status !== 200 && json.status !== '200'){
