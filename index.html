@@ -144,6 +144,20 @@
   .watch-row:hover .wl-remove{ display:flex; }
   .wl-remove:hover{ color:var(--up); }
   .up-color{ color:var(--up); }
+  .chip-row{ display:grid; grid-template-columns:104px minmax(0,1fr); gap:12px; align-items:center; }
+  .chip-row + .chip-row{ border-top:1px solid var(--border); margin-top:14px; padding-top:14px; }
+  .chip-info{ font-size:12px; line-height:1.7; white-space:nowrap; }
+  .chip-title{ color:var(--text-dim); font-weight:600; }
+  .chip-sub{ color:var(--text-faint); }
+  .chip-gap{ margin-top:6px; }
+  .chip-chart{ width:100%; aspect-ratio:360/104; }
+  .bar-hit{ cursor:pointer; }
+  .bar-hit:hover{ fill:rgba(255,255,255,0.07); }
+  @media (max-width:480px){
+    .chip-row{ grid-template-columns:1fr; gap:6px; }
+    .chip-info{ display:flex; flex-wrap:wrap; gap:2px 14px; white-space:normal; }
+    .chip-gap{ margin-top:0; }
+  }
   .down-color{ color:var(--down); }
 
   .add-stock{ padding:10px 16px; border-top:1px solid var(--border-soft); }
@@ -419,6 +433,9 @@ const state = {
   priceSheetError: null,
   priceSheetLastFetchAt: null,
   priceSheetMatchedCount: 0,
+  marketChip: { loading:false, error:null, rows:null, fetchedAt:null, autoTried:false }, // 大盤外資近 20 個交易日（本機獨立快取，不進加密同步資料）
+  marketTableExpanded: false, // 大盤明細表預設只顯示最新 10 天，展開才看全部
+  chipTableExpanded: false,   // 個股籌碼明細表同上
   channelLinkExpandedId: null,
   channelSearchQuery: '',
   analysisSectionCollapsed: { fundamentals:false, valuation:true, chip:true, notes:true, news:true },
@@ -731,14 +748,23 @@ async function fetchForeignNetBuy(symbol){
    對照表，所以改用 origin_name（財報原始中文科目名稱）關鍵字比對抓需要的數字。這是文字比對，不是結構化欄位，
    遇到少數公司科目命名方式不同時可能抓不到，會顯示「查無資料」而不是顯示錯誤數字。 */
 async function fetchFinMindDataset(dataset, symbol, startDate, endDate){
-  const params = new URLSearchParams({ dataset, data_id: symbol, start_date: startDate });
+  const params = new URLSearchParams({ dataset, start_date: startDate });
+  if(symbol) params.set('data_id', symbol); // 全市場資料集（例如整體三大法人）不需要代號，不能帶空的 data_id
   if(endDate) params.set('end_date', endDate);
   if(state.finmindToken) params.set('token', state.finmindToken.trim()); // 放查詢參數避免觸發 CORS 預檢，見 fetchFinMindPrice 註解
   const resp = await fetch('https://api.finmindtrade.com/api/v4/data?' + params.toString());
-  if(!resp.ok) throw new Error('HTTP ' + resp.status);
+  if(!resp.ok){
+    const err = new Error('HTTP ' + resp.status);
+    if(resp.status === 402) err.quotaExceeded = true;
+    if(resp.status === 403) err.ipBanned = true;
+    throw err;
+  }
   const json = await resp.json();
   if(json && json.status && json.status !== 200 && json.status !== '200'){
-    throw new Error(json.msg || ('狀態碼 ' + json.status));
+    const err = new Error(json.msg || ('狀態碼 ' + json.status));
+    if(json.status === 402 || json.status === '402') err.quotaExceeded = true;
+    if(json.status === 403 || json.status === '403') err.ipBanned = true;
+    throw err;
   }
   return json.data || [];
 }
@@ -977,7 +1003,7 @@ async function fetchValuationData(symbol){
 
 async function fetchChipFlowData(symbol){
   const end = new Date();
-  const start = new Date(end.getTime() - 20*86400000);
+  const start = new Date(end.getTime() - 35*86400000); // 35 個日曆天約含 23 個交易日，取最新 20 個
   const fmt2 = d=>d.toISOString().slice(0,10);
   const [instRows, marginRows] = await Promise.all([
     fetchFinMindDataset('TaiwanStockInstitutionalInvestorsBuySell', symbol, fmt2(start), fmt2(end)),
@@ -991,7 +1017,7 @@ async function fetchChipFlowData(symbol){
     if(r.name === 'Foreign_Investor') byDate[r.date].foreign += net;
     if(r.name === 'Investment_Trust') byDate[r.date].trust += net;
   });
-  const trend = Object.keys(byDate).sort().map(d=>({
+  const trend = Object.keys(byDate).sort().slice(-20).map(d=>({
     date:d, foreign: Math.round(byDate[d].foreign/1000), trust: Math.round(byDate[d].trust/1000),
   }));
 
@@ -1289,6 +1315,53 @@ function applyPriceSnapshot(snapshot){
   state.lastPriceRefreshAt = snapshot.at;
 }
 
+/* ================= 簡易 SVG 圖表（純前端自己畫，不依賴外部函式庫） ================= */
+// 單一系列長條圖：0 軸固定在正中央、上下對稱（刻度 = 該系列單日最大絕對值），正值往上（紅）、負值往下（綠），沿用全站漲跌色。
+// 每根柱子下方都標日期（直式小字，20 根才放得下）；柱子上方蓋一層透明感應區，滑鼠移過或點一下，
+// 左邊欄位就會顯示那一天的數字（手機沒有 hover，點選即可），移開則恢復顯示最新一天。
+function barChartSVG(items, pickKey){
+  if(!items || !items.length) return '';
+  const W=360, H=104, padL=6, padR=6, padT=8, padB=30;
+  const n = items.length;
+  const M = Math.max(1, ...items.map(i=>Math.abs(i.value)));
+  const plotH = H - padT - padB;
+  const y = v => padT + (M - v) / (2*M) * plotH;
+  const zeroY = y(0);
+  const slot = (W - padL - padR) / n;
+  const barW = Math.min(14, slot * 0.7);
+  const parts = items.map((it,i)=>{
+    const x0 = padL + slot*i, cx = x0 + slot/2;
+    const yv = y(it.value);
+    const top = Math.min(yv, zeroY), h = Math.max(1, Math.abs(yv - zeroY));
+    const color = it.value >= 0 ? 'var(--up)' : 'var(--down)';
+    const lx = (cx + 2.5).toFixed(1), ly = H - padB + 4;
+    const hit = pickKey
+      ? `<rect class="bar-hit" x="${x0.toFixed(1)}" y="0" width="${slot.toFixed(1)}" height="${H}" fill="transparent" onmouseenter="chipBarPick('${pickKey}','${escapeAttr(it.label)}',${it.value})" onclick="chipBarPick('${pickKey}','${escapeAttr(it.label)}',${it.value})"/>`
+      : '';
+    return `<rect class="bar" x="${(cx-barW/2).toFixed(1)}" y="${top.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1.2" style="fill:${color}; opacity:0.9"/>`
+      + `<text x="${lx}" y="${ly}" transform="rotate(-90 ${lx} ${ly})" text-anchor="end" font-size="7" style="fill:var(--text-faint)">${escapeAttr(it.label)}</text>`
+      + hit;
+  }).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%" role="img"${pickKey?` onmouseleave="chipBarReset('${pickKey}')"`:''}>
+    <line x1="${padL}" y1="${zeroY.toFixed(1)}" x2="${W-padR}" y2="${zeroY.toFixed(1)}" style="stroke:var(--text-faint)" stroke-width="1"/>
+    ${parts}
+  </svg>`;
+}
+function chipPickHtml(label, value, isLatest){
+  const cls = value >= 0 ? 'up-color' : 'down-color';
+  return `<span class="chip-sub">${isLatest?'最新 ':''}${escapeAttr(label)}</span><br/><b class="mono ${cls}">${value>=0?'+':''}${fmt(value,0)}</b>`;
+}
+function chipBarPick(key, label, value){
+  const el = document.getElementById('chip-pick-' + key);
+  if(el) el.innerHTML = chipPickHtml(label, Number(value), false);
+}
+function chipBarReset(key){
+  const el = document.getElementById('chip-pick-' + key);
+  if(el) el.innerHTML = el.getAttribute('data-default') || '';
+}
+function toggleChipTable(){ state.chipTableExpanded = !state.chipTableExpanded; render(); }
+function toggleMarketTable(){ state.marketTableExpanded = !state.marketTableExpanded; render(); }
+
 /* ================= 工具 ================= */
 function fmt(n, d=2){ return Number(n).toLocaleString('zh-TW', { minimumFractionDigits:d, maximumFractionDigits:d }); }
 function pct(cur, base){ return ((cur-base)/base*100); }
@@ -1325,7 +1398,7 @@ function sparkSVG(history, w=240, h=70){
 
 /* ================= 事件處理 ================= */
 function selectStock(sym){ state.selected = sym; render(); }
-function setTab(tab){ state.activeTab = tab; render(); }
+function setTab(tab){ state.activeTab = tab; if(tab==='market') ensureMarketChip(false); render(); }
 
 function getActiveGroup(){
   return state.watchGroups.find(g=>g.id===state.activeGroupId) || state.watchGroups[0];
@@ -2310,6 +2383,9 @@ function resetStateForNewUser(){
   state.priceSheetError = null;
   state.priceSheetLastFetchAt = null;
   state.priceSheetMatchedCount = 0;
+  state.marketChip = { loading:false, error:null, rows:null, fetchedAt:null, autoTried:false };
+  state.marketTableExpanded = false;
+  state.chipTableExpanded = false;
   stopAutoPull();
   stopPriceSheetPolling();
   state.selected = STOCK_POOL[0].symbol;
@@ -2539,6 +2615,7 @@ function renderMain(sel){
     ['portfolio','持股總覽'],
     ['avg','攤平計算'],
     ['news','個股分析'],
+    ['market','大盤籌碼'],
     ['channels','頻道摘要'],
     ['pl','損益統計'],
     ['dividend','股票配息'],
@@ -2577,6 +2654,7 @@ function renderMain(sel){
         ${state.activeTab==='dividend' ? renderDividendTab() : ''}
         ${state.activeTab==='news' ? renderNewsTab(sel) : ''}
         ${state.activeTab==='channels' ? renderChannelsTab() : ''}
+        ${state.activeTab==='market' ? renderMarketTab() : ''}
         ${state.activeTab==='portfolio' ? renderPortfolioTab() : ''}
         ${state.activeTab==='pl' ? renderPLSummaryTab() : ''}
       </div>
@@ -2696,6 +2774,114 @@ function renderTechnicalIndicators(tech){
     </div>
   `;
 }
+/* ================= 大盤籌碼：全市場外資每日買賣明細（近 10 個交易日） =================
+   資料來源：FinMind「整體市場三大法人買賣表」TaiwanStockTotalInstitutionalInvestors（金額單位：元，這裡換算成億）。
+   外資 ＝ 外資及陸資（Foreign_Investor）＋ 外資自營商（Foreign_Dealer_Self）。
+   只在打開這個分頁時才抓、且資料還新鮮就不重抓，每次最多 1 次請求；快取存在本機獨立的 key，不進加密同步資料。 */
+const MARKET_FOREIGN_NAMES = ['Foreign_Investor','Foreign_Dealer_Self'];
+const MARKET_CHIP_FRESH_MS = 3 * 60 * 60 * 1000; // 3 小時內視為新鮮
+async function fetchMarketForeignDaily(){
+  const end = new Date();
+  const start = new Date(end.getTime() - 35*86400000); // 35 個日曆天約含 23 個交易日，取最新 20 個
+  const f = d => d.toISOString().slice(0,10);
+  const rows = await fetchFinMindDataset('TaiwanStockTotalInstitutionalInvestors', '', f(start), f(end));
+  const byDate = {};
+  rows.forEach(r=>{
+    if(!MARKET_FOREIGN_NAMES.includes(r.name)) return;
+    const d = String(r.date).slice(0,10);
+    if(!byDate[d]) byDate[d] = { buy:0, sell:0 };
+    byDate[d].buy += Number(r.buy)||0;
+    byDate[d].sell += Number(r.sell)||0;
+  });
+  const dates = Object.keys(byDate).sort().slice(-20);
+  const toYi = n => Math.round(n/1e6)/100; // 元 → 億，取到小數 2 位
+  return dates.map(d=>({ date:d, buy:toYi(byDate[d].buy), sell:toYi(byDate[d].sell), net:toYi(byDate[d].buy - byDate[d].sell) }));
+}
+// 資料範圍從 10 天改成 20 天，換 key 讓舊的 10 天快取自動作廢
+function marketChipSnapshotKey(username){ return 'stockDashboard:v1:marketChip20:' + username; }
+function loadMarketChipSnapshot(){
+  try{
+    const raw = localStorage.getItem(marketChipSnapshotKey(state.session.username));
+    if(!raw) return null;
+    const snap = JSON.parse(raw);
+    return (snap && Array.isArray(snap.rows) && snap.at) ? snap : null;
+  } catch(e){ return null; }
+}
+async function ensureMarketChip(force){
+  const mc = state.marketChip;
+  if(mc.loading || !state.session.loggedIn) return;
+  if(!mc.rows){
+    const snap = loadMarketChipSnapshot();
+    if(snap){ mc.rows = snap.rows; mc.fetchedAt = snap.at; }
+  }
+  if(!force && mc.rows && mc.fetchedAt && Date.now() - new Date(mc.fetchedAt).getTime() < MARKET_CHIP_FRESH_MS) return;
+  mc.loading = true; mc.error = null;
+  render();
+  try{
+    const rows = await fetchMarketForeignDaily();
+    if(!rows.length) throw new Error('FinMind 沒有回傳外資資料（可能是還沒更新，或這個資料集需要登入／Token）');
+    mc.rows = rows; mc.fetchedAt = new Date().toISOString();
+    try{ localStorage.setItem(marketChipSnapshotKey(state.session.username), JSON.stringify({ at: mc.fetchedAt, rows })); }catch(e){ /* 存不進去就算了，只是少一層快取 */ }
+  } catch(err){
+    mc.error = err && err.quotaExceeded ? 'FinMind 額度已用完，請稍後再試（或在「股票配息」頁籤填入 Token 提高上限）'
+      : err && err.ipBanned ? 'FinMind 暫時封鎖了這個網路 IP，約 30 分鐘後自動解除，這段時間請不要重複重新整理'
+      : ((err && err.message) || '讀取失敗');
+  }
+  mc.loading = false;
+  render();
+}
+function manualRefreshMarketChip(){
+  const mc = state.marketChip;
+  if(mc.fetchedAt && Date.now() - new Date(mc.fetchedAt).getTime() < 10*60*1000){
+    if(!confirm('10 分鐘內才剛更新過，資料通常不會變。確定要再花一次 FinMind 額度重新抓取嗎？')) return;
+  }
+  ensureMarketChip(true);
+}
+function renderMarketTab(){
+  const mc = state.marketChip;
+  if(!mc.rows && !mc.loading && !mc.autoTried){ // 重新登入後停在這個分頁的情況：自動補抓一次（只嘗試一次，失敗不會一直重試）
+    mc.autoTried = true;
+    setTimeout(()=>ensureMarketChip(false), 0);
+  }
+  const allRows = (mc.rows || []).slice().reverse(); // 最新日期在最上面
+  const rows = state.marketTableExpanded ? allRows : allRows.slice(0,10); // 預設只顯示最新 10 天，展開才看全部
+  const sum = (mc.rows || []).reduce((acc,r)=>({ buy:acc.buy+r.buy, sell:acc.sell+r.sell, net:acc.net+r.net }), { buy:0, sell:0, net:0 });
+  const netCls = n => n>=0 ? 'up-color' : 'down-color';
+  const sign = n => n>=0 ? '+' : '';
+  const status = mc.loading ? '讀取中…'
+    : mc.fetchedAt ? `資料日：${(mc.rows&&mc.rows.length) ? mc.rows[mc.rows.length-1].date : '—'}　更新於 ${new Date(mc.fetchedAt).toLocaleTimeString('zh-TW',{hour12:false})}`
+    : '尚未讀取';
+  return `
+    <div class="panel-section">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">大盤外資買賣超（近 ${(mc.rows||[]).length || 20} 個交易日）</h3>
+        <button class="btn" onclick="manualRefreshMarketChip()" ${mc.loading?'disabled':''}>${mc.loading?'讀取中…':'重新整理'}</button>
+      </div>
+      <p class="panel-hint">全市場外資（外資及陸資＋外資自營商）每日買賣金額，單位：億元；買超紅、賣超綠。三大法人資料通常收盤後才會陸續公布，當天資料還沒出來時，表格會停在最近一個有資料的交易日。數字請以證交所公布為準。<br/>${escapeAttr(status)}</p>
+      ${mc.error ? `<div class="warn-box">${escapeAttr(mc.error)}</div>` : ''}
+      <div class="card" style="padding:0; overflow-x:auto;">
+        <table>
+          <thead><tr><th>日期</th><th>買進（億）</th><th>賣出（億）</th><th>買賣超（億）</th></tr></thead>
+          <tbody>
+            ${rows.length ? rows.map(r=>`<tr>
+              <td>${r.date}</td>
+              <td>${fmt(r.buy,2)}</td>
+              <td>${fmt(r.sell,2)}</td>
+              <td class="${netCls(r.net)}">${sign(r.net)}${fmt(r.net,2)}</td>
+            </tr>`).join('') + `<tr style="font-weight:600;">
+              <td>${allRows.length} 日合計</td>
+              <td>${fmt(sum.buy,2)}</td>
+              <td>${fmt(sum.sell,2)}</td>
+              <td class="${netCls(sum.net)}">${sign(sum.net)}${fmt(sum.net,2)}</td>
+            </tr>` : `<tr><td colspan="4" style="text-align:center; color:var(--text-faint);">${mc.loading ? '讀取中…' : '尚無資料'}</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      ${allRows.length>10 ? `<div style="margin-top:8px;"><button class="btn-ghost" onclick="toggleMarketTable()">${state.marketTableExpanded ? '收合明細' : '展開全部 '+allRows.length+' 日明細'}</button></div>` : ''}
+    </div>
+  `;
+}
+
 function renderChannelsTab(){
   const channels = state.channels;
   const tabsHtml = channels.length ? `
@@ -2898,17 +3084,44 @@ function renderNewsTab(sel){
 
   // ---- 籌碼資金動向 ----
   const chip = a.chip;
-  const chipBody = (!chip) ? `<p class="panel-hint">尚未抓取資料</p>` : chip.error ? `<div class="warn-box">${escapeAttr(chip.error)}</div>` : `
-    <div class="card" style="padding:0; overflow-x:auto;">
+  // 外資、投信合併成同一張卡片：左邊是標題／刻度／累計／最新（滑過或點選某天就改顯示那天），右邊是柱狀圖
+  function chipBarRow(title, trend, key){
+    const n = trend.length;
+    const vals = trend.map(t=>t[key]);
+    const M = Math.max(0, ...vals.map(v=>Math.abs(v)));
+    const total = vals.reduce((x,y)=>x+y,0);
+    const defHtml = chipPickHtml(trend[n-1].date.slice(5), trend[n-1][key], true);
+    return `<div class="chip-row">
+      <div class="chip-info">
+        <div class="chip-title">${title}（張）</div>
+        <div class="chip-sub">刻度 ±${fmt(M,0)}</div>
+        <div class="chip-gap">近 ${n} 日累計</div>
+        <div><b class="mono ${total>=0?'up-color':'down-color'}">${total>=0?'+':''}${fmt(total,0)}</b></div>
+        <div class="chip-gap" id="chip-pick-${key}" data-default="${escapeAttr(defHtml)}">${defHtml}</div>
+      </div>
+      <div class="chip-chart">${barChartSVG(trend.map(t=>({ label:t.date.slice(5), value:t[key] })), key)}</div>
+    </div>`;
+  }
+  // 明細表：預設最新 10 天，展開才看全部（最新日期在最上面）
+  function chipTableHtml(trend){
+    const all = trend.slice().reverse();
+    const shown = state.chipTableExpanded ? all : all.slice(0,10);
+    return `<div class="card" style="padding:0; overflow-x:auto; margin-top:10px;">
       <table>
         <thead><tr><th>日期</th><th>外資買賣超（張）</th><th>投信買賣超（張）</th></tr></thead>
-        <tbody>${chip.trend.map(t=>`<tr>
+        <tbody>${shown.map(t=>`<tr>
           <td>${t.date}</td>
           <td class="${t.foreign>=0?'up-color':'down-color'}">${t.foreign>=0?'+':''}${fmt(t.foreign,0)}</td>
           <td class="${t.trust>=0?'up-color':'down-color'}">${t.trust>=0?'+':''}${fmt(t.trust,0)}</td>
         </tr>`).join('') || `<tr><td colspan="3" style="text-align:center; color:var(--text-faint);">查無資料</td></tr>`}</tbody>
       </table>
     </div>
+    ${all.length>10 ? `<div style="margin-top:8px;"><button class="btn-ghost" onclick="toggleChipTable()">${state.chipTableExpanded ? '收合明細' : '展開全部 '+all.length+' 日明細'}</button></div>` : ''}`;
+  }
+  const chipBody = (!chip) ? `<p class="panel-hint">尚未抓取資料</p>` : chip.error ? `<div class="warn-box">${escapeAttr(chip.error)}</div>` : `
+    ${chip.trend.length ? `<div class="card" style="margin-top:10px;">${chipBarRow('外資買賣超', chip.trend, 'foreign')}${chipBarRow('投信買賣超', chip.trend, 'trust')}</div>
+    <p class="panel-hint" style="margin-top:6px;">滑鼠移到柱子上（手機點一下），左邊會顯示那一天的數字；下方明細表有完整數字。</p>` : ''}
+    ${chipTableHtml(chip.trend)}
     <div class="card" style="margin-top:10px;">
       <div class="result-line"><span class="rl-label">融資餘額${chip.marginDate?`（${chip.marginDate}）`:''}</span><span class="rl-val">${chip.marginBalance!=null?fmt(chip.marginBalance,0)+' 張':'查無資料'}${chip.marginChange!=null?` <span class="${chip.marginChange>=0?'up-color':'down-color'}">（${chip.marginChange>=0?'+':''}${fmt(chip.marginChange,0)}）</span>`:''}</span></div>
       <div class="result-line"><span class="rl-label">融券餘額</span><span class="rl-val">${chip.shortBalance!=null?fmt(chip.shortBalance,0)+' 張':'查無資料'}${chip.shortChange!=null?` <span class="${chip.shortChange>=0?'up-color':'down-color'}">（${chip.shortChange>=0?'+':''}${fmt(chip.shortChange,0)}）</span>`:''}</span></div>
